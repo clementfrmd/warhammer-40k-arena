@@ -15,8 +15,16 @@ RUN npm ci --only=production
 # Copy server files
 COPY server/ ./server/
 
-# Copy static files for optional web UI serving
-COPY index.html styles.css game.js battle.js characters.js factions.js security.js api.js ./public/
+# Create public directory and copy static files (Web UI)
+RUN mkdir -p ./public
+COPY index.html ./public/
+COPY styles.css ./public/
+COPY game.js ./public/
+COPY battle.js ./public/
+COPY characters.js ./public/
+COPY factions.js ./public/
+COPY security.js ./public/
+COPY api.js ./public/
 
 # Expose port
 EXPOSE 3000

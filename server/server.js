@@ -4,10 +4,14 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Serve static files (web UI)
+app.use(express.static(path.join(__dirname, '../public')));
 
 // Import game modules
 const { GameConfig, createGameState, Factions, Characters } = require('./game-logic');
@@ -581,19 +585,36 @@ function sanitizeStateForPlayer(state, playerId) {
 // START SERVER
 // ============================================
 
+// Serve web UI for any non-API routes
+app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+        res.sendFile(path.join(__dirname, '../public/index.html'));
+    }
+});
+
+// ============================================
+// START SERVER
+// ============================================
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Warhammer 40K Battle Arena Server running on port ${PORT}`);
-    console.log(`API endpoints:`);
-    console.log(`  GET  /api/health`);
-    console.log(`  GET  /api/factions`);
-    console.log(`  GET  /api/games`);
-    console.log(`  POST /api/games`);
-    console.log(`  GET  /api/games/:id`);
-    console.log(`  POST /api/games/:id/move`);
-    console.log(`  POST /api/games/:id/attack`);
-    console.log(`  POST /api/games/:id/end-turn`);
-    console.log(`  GET  /api/games/:id/report`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n========================================`);
+    console.log(`  WARHAMMER 40K BATTLE ARENA SERVER`);
+    console.log(`========================================`);
+    console.log(`\n  Server running on port ${PORT}`);
+    console.log(`\n  Web UI:     http://localhost:${PORT}/`);
+    console.log(`  API Base:   http://localhost:${PORT}/api`);
+    console.log(`\n  API Endpoints:`);
+    console.log(`    GET  /api/health        - Health check`);
+    console.log(`    GET  /api/factions      - List factions`);
+    console.log(`    GET  /api/games         - List games`);
+    console.log(`    POST /api/games         - Create game`);
+    console.log(`    GET  /api/games/:id     - Get game state`);
+    console.log(`    POST /api/games/:id/move      - Move unit`);
+    console.log(`    POST /api/games/:id/attack    - Attack unit`);
+    console.log(`    POST /api/games/:id/end-turn  - End turn`);
+    console.log(`    GET  /api/games/:id/report    - Battle report`);
+    console.log(`\n========================================\n`);
 });
 
 module.exports = app;
