@@ -1,409 +1,386 @@
 # Deploying Warhammer 40K Battle Arena on Aleph Cloud
 
-This guide explains how to deploy the game on Aleph Cloud and set up Claude AI bots to play.
+This guide explains how to deploy the game server on Aleph Cloud VM and connect Claude bots.
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│  Claude Bot 1   │         │  Claude Bot 2   │
+│  (VPS/Computer) │         │  (VPS/Computer) │
+└────────┬────────┘         └────────┬────────┘
+         │                           │
+         │     HTTP REST API         │
+         └───────────┬───────────────┘
+                     │
+              ┌──────▼──────┐
+              │  Aleph VM   │
+              │ Game Server │
+              │  (Node.js)  │
+              └─────────────┘
+```
 
 ---
 
 ## Table of Contents
 
 1. [Prerequisites](#prerequisites)
-2. [Deploying to Aleph Cloud](#deploying-to-aleph-cloud)
-3. [Claude Bot Integration](#claude-bot-integration)
-4. [API Reference for Bots](#api-reference-for-bots)
-5. [Running Bot Matches](#running-bot-matches)
+2. [Deploy Game Server to Aleph VM](#deploy-game-server-to-aleph-vm)
+3. [Run Claude Bots](#run-claude-bots)
+4. [API Reference](#api-reference)
+5. [Running Matches](#running-matches)
 
 ---
 
 ## Prerequisites
 
-### What You Need
-
-- **Aleph Cloud Account**: Sign up at [aleph.cloud](https://aleph.cloud)
-- **Aleph CLI**: Install the Aleph command-line tool
-- **Node.js 18+**: For running bot scripts locally (optional)
-- **Anthropic API Key**: For Claude bot integration
-
-### Install Aleph CLI
+### On Your Local Machine
 
 ```bash
-# Using pip
+# Install Aleph CLI
 pip install aleph-client
 
-# Or using pipx (recommended)
-pipx install aleph-client
+# Install Node.js 18+ (for running bots)
+# https://nodejs.org/
 ```
+
+### Required Accounts
+
+- **Aleph Cloud Account**: [console.aleph.cloud](https://console.aleph.cloud)
+- **Anthropic API Key**: [console.anthropic.com](https://console.anthropic.com) (for Claude bots)
 
 ---
 
-## Deploying to Aleph Cloud
+## Deploy Game Server to Aleph VM
 
-### Option 1: Static Website Deployment (Recommended)
-
-The game is a pure HTML/CSS/JS application, perfect for static hosting.
-
-#### Step 1: Prepare Your Files
-
-Ensure all files are in a single directory:
-
-```
-warhammer-40k-arena/
-├── index.html
-├── styles.css
-├── game.js
-├── battle.js
-├── characters.js
-├── factions.js
-├── security.js
-└── api.js
-```
-
-#### Step 2: Deploy to Aleph IPFS
+### Step 1: Build Docker Image
 
 ```bash
-# Navigate to your project directory
 cd warhammer-40k-arena
 
-# Upload to Aleph's decentralized storage
-aleph file upload . --channel wh40k-arena
+# Install dependencies locally first (for testing)
+npm install
 
-# You'll receive an IPFS hash like:
-# QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Build Docker image
+docker build -t wh40k-arena .
+
+# Test locally
+docker run -p 3000:3000 wh40k-arena
+
+# Verify it works
+curl http://localhost:3000/api/health
+# Should return: {"status":"ok","games":0,"timestamp":...}
 ```
 
-#### Step 3: Pin and Create Domain
+### Step 2: Push to Container Registry
 
 ```bash
-# Pin the content for persistence
-aleph file pin QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Tag for your registry (Docker Hub example)
+docker tag wh40k-arena yourusername/wh40k-arena:latest
 
-# Create a custom domain (optional)
-aleph domain create wh40k-arena.aleph.sh --target QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Push
+docker push yourusername/wh40k-arena:latest
 ```
 
-Your game will be accessible at:
-- IPFS: `https://ipfs.aleph.cloud/ipfs/QmXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
-- Custom: `https://wh40k-arena.aleph.sh`
-
-### Option 2: Compute Instance (For Backend API)
-
-If you need a backend server for multiplayer:
-
-#### Step 1: Create a Dockerfile
-
-```dockerfile
-FROM nginx:alpine
-COPY . /usr/share/nginx/html
-EXPOSE 80
-```
-
-#### Step 2: Deploy Compute Instance
+### Step 3: Deploy to Aleph VM
 
 ```bash
-# Create compute instance
+# Create Aleph instance
 aleph instance create \
   --name wh40k-arena \
-  --image nginx:alpine \
-  --cpu 1 \
+  --image yourusername/wh40k-arena:latest \
+  --vcpus 1 \
   --memory 512 \
-  --disk 1024
+  --rootfs-size 1024 \
+  --channel wh40k
 
-# Deploy your code
-aleph instance deploy wh40k-arena ./
+# Note the instance ID and IPv6 address
+# Example: Instance created: abc123...
+# IPv6: 2001:db8::1
 ```
 
----
-
-## Claude Bot Integration
-
-The game includes a full API layer (`api.js`) designed for AI agents to play.
-
-### How Bots Play
-
-1. **Initialize Game**: Create a new game with two agent IDs
-2. **Get State**: Fetch current battlefield and unit positions
-3. **Make Moves**: Send move/attack commands via API
-4. **End Turn**: Signal turn completion
-
-### Setting Up a Claude Bot
-
-#### Step 1: Create Bot Script
-
-Create `claude-bot.js`:
-
-```javascript
-import Anthropic from '@anthropic-ai/sdk';
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
-
-// Game state context for Claude
-const SYSTEM_PROMPT = `You are playing Warhammer 40K Battle Arena.
-You control Player {PLAYER_NUM} with faction {FACTION}.
-
-GAME RULES:
-- Each turn: Movement -> Shooting -> Combat -> Morale
-- Units can move once and attack once per turn
-- Shooting range: 6 cells, Melee range: 2 cells
-- Combat: Roll to hit (3+), wound (4+), save (4+)
-- Victory: Destroy enemy HQ or have most VP after 5 rounds
-
-AVAILABLE ACTIONS:
-1. move(unitId, toRow, toCol) - Move a unit
-2. attack(attackerId, targetId, type) - Attack enemy (type: 'shooting' or 'melee')
-3. endTurn() - End your turn
-
-Respond with JSON: {"action": "move|attack|endTurn", "params": {...}}`;
-
-class ClaudeBot {
-  constructor(playerId, agentId, gameId) {
-    this.playerId = playerId;
-    this.agentId = agentId;
-    this.gameId = gameId;
-  }
-
-  async getMove(gameState) {
-    const prompt = this.formatGameState(gameState);
-
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT.replace('{PLAYER_NUM}', this.playerId)
-                          .replace('{FACTION}', gameState.players[this.playerId].faction),
-      messages: [{ role: 'user', content: prompt }]
-    });
-
-    return JSON.parse(response.content[0].text);
-  }
-
-  formatGameState(state) {
-    return `
-Current Turn: ${state.turn}, Round: ${state.round}, Phase: ${state.phase}
-You are Player ${this.playerId} (${state.currentPlayer === this.playerId ? 'YOUR TURN' : 'waiting'})
-
-Your Units:
-${state.players[this.playerId].units.map(u =>
-  `- ${u.name} (${u.type}) at (${u.position?.row}, ${u.position?.col}) - ${u.currentWounds}/${u.wounds} wounds`
-).join('\n')}
-
-Enemy Units:
-${state.players[this.playerId === 1 ? 2 : 1].units.map(u =>
-  `- ${u.name} (${u.type}) at (${u.position?.row}, ${u.position?.col}) - ${u.currentWounds}/${u.wounds} wounds`
-).join('\n')}
-
-Victory Points: You ${state.players[this.playerId].vp} - Enemy ${state.players[this.playerId === 1 ? 2 : 1].vp}
-
-What is your action?`;
-  }
-}
-
-export default ClaudeBot;
-```
-
-#### Step 2: Create Game Runner
-
-Create `run-match.js`:
-
-```javascript
-import ClaudeBot from './claude-bot.js';
-
-// Simulated API (in browser, use the actual API object)
-class GameAPI {
-  constructor() {
-    this.state = null;
-  }
-
-  async initGame(config) {
-    // Call the actual API.initGame()
-    const result = await API.initGame(config);
-    this.state = result.gameState;
-    return result;
-  }
-
-  async makeMove(gameId, agentId, moveData) {
-    return await API.makeMove(gameId, agentId, moveData);
-  }
-
-  async attackUnit(gameId, agentId, attackData) {
-    return await API.attackUnit(gameId, agentId, attackData);
-  }
-
-  async endTurn(gameId, agentId) {
-    return await API.endTurn(gameId, agentId);
-  }
-}
-
-async function runMatch() {
-  const api = new GameAPI();
-
-  // Initialize game
-  const game = await api.initGame({
-    player1Faction: 'ultramarines',
-    player2Faction: 'orks',
-    player1AgentId: 'claude-bot-1',
-    player2AgentId: 'claude-bot-2'
-  });
-
-  const bot1 = new ClaudeBot(1, 'claude-bot-1', game.gameId);
-  const bot2 = new ClaudeBot(2, 'claude-bot-2', game.gameId);
-
-  // Game loop
-  while (game.gameState.round <= game.gameState.maxRounds) {
-    const currentBot = game.gameState.currentPlayer === 1 ? bot1 : bot2;
-
-    // Get bot's decision
-    const decision = await currentBot.getMove(game.gameState);
-
-    // Execute action
-    switch (decision.action) {
-      case 'move':
-        await api.makeMove(game.gameId, currentBot.agentId, decision.params);
-        break;
-      case 'attack':
-        await api.attackUnit(game.gameId, currentBot.agentId, decision.params);
-        break;
-      case 'endTurn':
-        await api.endTurn(game.gameId, currentBot.agentId);
-        break;
-    }
-
-    // Check for victory
-    if (checkVictory(game.gameState)) break;
-  }
-
-  console.log('Match complete!', Battle.generateBattleReport());
-}
-
-runMatch();
-```
-
----
-
-## API Reference for Bots
-
-### Initialize Game
-
-```javascript
-const result = await API.initGame({
-  player1Faction: 'ultramarines',  // See factions.js for options
-  player2Faction: 'orks',
-  player1AgentId: 'agent-uuid-1',
-  player2AgentId: 'agent-uuid-2'
-});
-// Returns: { success: true, gameId: 'xxx', gameState: {...} }
-```
-
-### Get Game State
-
-```javascript
-const result = await API.getGameState(gameId);
-// Returns: { success: true, gameState: {...} }
-```
-
-### Make a Move
-
-```javascript
-const result = await API.makeMove(gameId, agentId, {
-  unitId: 'p1-captain-0',
-  from: { row: 2, col: 0 },
-  to: { row: 3, col: 2 }
-});
-// Returns: { success: true, gameState: {...}, moveRecorded: {...} }
-```
-
-### Attack a Unit
-
-```javascript
-const result = await API.attackUnit(gameId, agentId, {
-  attackerId: 'p1-captain-0',
-  targetId: 'p2-warboss-0',
-  type: 'shooting'  // or 'melee'
-});
-// Returns: { success: true, gameState: {...}, combatResult: {...}, unitDestroyed: false }
-```
-
-### End Turn
-
-```javascript
-const result = await API.endTurn(gameId, agentId);
-// Returns: { success: true, gameState: {...} }
-```
-
-### Get Battle Report
-
-```javascript
-const result = await API.generateBattleReport(gameId);
-// Returns: { success: true, report: {...} }
-```
-
----
-
-## Running Bot Matches
-
-### Local Browser Testing
-
-1. Open `index.html` in a browser
-2. Open Developer Console (F12)
-3. Run bot commands directly:
-
-```javascript
-// Initialize a bot game
-const game = await API.initGame({
-  player1Faction: 'bloodAngels',
-  player2Faction: 'tyranids',
-  player1AgentId: 'bot1',
-  player2AgentId: 'bot2'
-});
-
-// Make moves programmatically
-await API.makeMove(game.gameId, 'bot1', {
-  unitId: game.gameState.players[1].units[0].id,
-  from: game.gameState.players[1].units[0].position,
-  to: { row: 3, col: 1 }
-});
-```
-
-### Headless Bot Matches (Node.js)
-
-For running matches without a browser:
-
-1. Extract game logic to a Node.js module
-2. Use jsdom for DOM simulation (if needed)
-3. Run matches via CLI or as a service
+### Step 4: Configure Domain (Optional)
 
 ```bash
-# Install dependencies
-npm install @anthropic-ai/sdk
-
-# Set API key
-export ANTHROPIC_API_KEY=your-key-here
-
-# Run match
-node run-match.js
+# Create a domain pointing to your instance
+aleph domain attach wh40k-arena.aleph.sh --instance abc123
 ```
 
-### Tournament Mode
+Your server is now live at:
+- Direct: `http://[IPv6]:3000`
+- Domain: `https://wh40k-arena.aleph.sh`
 
-For running multiple bot matches:
+### Step 5: Verify Deployment
+
+```bash
+# Test the server
+curl https://wh40k-arena.aleph.sh/api/health
+
+# List available factions
+curl https://wh40k-arena.aleph.sh/api/factions
+```
+
+---
+
+## Run Claude Bots
+
+Bots run on separate VPS/computers and connect to the game server via HTTP.
+
+### Step 1: Install Bot Dependencies
+
+```bash
+cd warhammer-40k-arena/bot
+
+# Install dependencies
+npm install
+```
+
+### Step 2: Set Environment Variables
+
+```bash
+# Your Anthropic API key
+export ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxx
+
+# Game server URL (your Aleph VM)
+export SERVER_URL=https://wh40k-arena.aleph.sh
+```
+
+### Step 3: Run a Match
+
+```bash
+# Run a match: Ultramarines vs Orks
+node claude-bot.js --server https://wh40k-arena.aleph.sh --p1 ultramarines --p2 orks
+
+# With debug output
+node claude-bot.js --server https://wh40k-arena.aleph.sh --p1 bloodAngels --p2 tyranids --debug
+
+# Using different Claude model
+node claude-bot.js --model claude-sonnet-4-20250514 --p1 eldar --p2 necrons
+```
+
+### Bot CLI Options
+
+```
+Usage: node claude-bot.js [options]
+
+Options:
+  --server URL    Game server URL (required for remote play)
+  --p1 FACTION    Player 1 faction (default: ultramarines)
+  --p2 FACTION    Player 2 faction (default: orks)
+  --model MODEL   Claude model (default: claude-sonnet-4-20250514)
+  --debug         Show Claude prompts and responses
+  --help          Show help
+```
+
+---
+
+## API Reference
+
+### Base URL
+
+```
+https://your-aleph-instance.aleph.sh/api
+```
+
+### Endpoints
+
+#### Health Check
+```
+GET /api/health
+```
+
+#### List Factions
+```
+GET /api/factions
+```
+
+#### List Games
+```
+GET /api/games
+```
+
+#### Create Game
+```
+POST /api/games
+Content-Type: application/json
+
+{
+  "player1Faction": "ultramarines",
+  "player2Faction": "orks",
+  "player1AgentId": "bot-1-uuid",
+  "player2AgentId": "bot-2-uuid"
+}
+
+Response:
+{
+  "success": true,
+  "gameId": "abc-123",
+  "player1Token": "base64...",
+  "player2Token": "base64...",
+  "gameState": {...}
+}
+```
+
+#### Get Game State
+```
+GET /api/games/:gameId
+
+Response:
+{
+  "success": true,
+  "gameState": {
+    "turn": 1,
+    "round": 1,
+    "phase": "movement",
+    "currentPlayer": 1,
+    "players": {...},
+    "battlefield": [...],
+    "terrain": [...]
+  },
+  "status": "active"
+}
+```
+
+#### Make Move
+```
+POST /api/games/:gameId/move
+Content-Type: application/json
+
+{
+  "token": "your-player-token",
+  "unitId": "p1-captain-0",
+  "to": {"row": 3, "col": 2}
+}
+```
+
+#### Attack
+```
+POST /api/games/:gameId/attack
+Content-Type: application/json
+
+{
+  "token": "your-player-token",
+  "attackerId": "p1-captain-0",
+  "targetId": "p2-warboss-0",
+  "type": "shooting"
+}
+```
+
+#### End Turn
+```
+POST /api/games/:gameId/end-turn
+Content-Type: application/json
+
+{
+  "token": "your-player-token"
+}
+```
+
+#### Get Battle Report
+```
+GET /api/games/:gameId/report
+
+Response:
+{
+  "success": true,
+  "report": {
+    "gameId": "abc-123",
+    "status": "finished",
+    "winner": 1,
+    "rounds": 5,
+    "player1": {
+      "faction": "Ultramarines",
+      "unitsRemaining": 3,
+      "victoryPoints": 4
+    },
+    "player2": {
+      "faction": "Orks",
+      "unitsRemaining": 1,
+      "victoryPoints": 2
+    }
+  }
+}
+```
+
+---
+
+## Running Matches
+
+### Single Match
+
+```bash
+# From bot directory
+ANTHROPIC_API_KEY=sk-xxx node claude-bot.js \
+  --server https://wh40k-arena.aleph.sh \
+  --p1 ultramarines \
+  --p2 orks
+```
+
+### Remote Bots on Different Machines
+
+**On Machine A (Bot 1):**
+```bash
+# Create game and get tokens
+curl -X POST https://wh40k-arena.aleph.sh/api/games \
+  -H "Content-Type: application/json" \
+  -d '{
+    "player1Faction": "ultramarines",
+    "player2Faction": "orks",
+    "player1AgentId": "machine-a-bot",
+    "player2AgentId": "machine-b-bot"
+  }'
+
+# Share gameId and player2Token with Machine B
+# Run bot 1 with player1Token
+```
+
+**On Machine B (Bot 2):**
+```bash
+# Connect using the shared gameId and player2Token
+# Run your bot script with the token
+```
+
+### Tournament Script
+
+Create `tournament.js`:
 
 ```javascript
-async function runTournament(factions, numMatches) {
+const { runMatch } = require('./claude-bot');
+
+const factions = [
+  'ultramarines', 'bloodAngels', 'orks',
+  'tyranids', 'eldar', 'necrons'
+];
+
+async function tournament(numMatches = 10) {
   const results = [];
 
   for (let i = 0; i < numMatches; i++) {
-    const f1 = factions[Math.floor(Math.random() * factions.length)];
-    const f2 = factions[Math.floor(Math.random() * factions.length)];
+    const p1 = factions[Math.floor(Math.random() * factions.length)];
+    let p2 = factions[Math.floor(Math.random() * factions.length)];
+    while (p2 === p1) {
+      p2 = factions[Math.floor(Math.random() * factions.length)];
+    }
 
-    const result = await runMatch(f1, f2);
+    console.log(`\nMatch ${i + 1}: ${p1} vs ${p2}`);
+    const result = await runMatch({
+      serverUrl: process.env.SERVER_URL,
+      player1Faction: p1,
+      player2Faction: p2
+    });
     results.push(result);
   }
 
-  return results;
+  // Print summary
+  console.log('\n=== TOURNAMENT RESULTS ===');
+  results.forEach((r, i) => {
+    console.log(`Match ${i + 1}: ${r.report.player1.faction} vs ${r.report.player2.faction} - Winner: Player ${r.report.winner}`);
+  });
 }
 
-// Run 10 matches with random factions
-const allFactions = Object.keys(Factions);
-runTournament(allFactions, 10);
+tournament(10);
 ```
 
 ---
@@ -436,29 +413,64 @@ runTournament(allFactions, 10);
 
 ## Troubleshooting
 
-### Common Issues
+### Server Issues
 
-**Q: API returns "Game not found"**
-A: Ensure you're using the correct gameId from initGame()
+**Container won't start:**
+```bash
+# Check logs
+aleph instance logs wh40k-arena
+```
 
-**Q: "Not your turn" error**
-A: Check that your agentId matches the current player's agentId
+**Port not accessible:**
+- Ensure port 3000 is exposed in Dockerfile
+- Check Aleph firewall rules
 
-**Q: Rate limit exceeded**
-A: Wait 60 seconds between rapid commands (10 moves/min, 5 attacks/min)
+### Bot Issues
 
-**Q: State integrity failed**
-A: Don't modify game state directly; use API methods only
+**"Game not found":**
+- Verify the gameId is correct
+- Game may have been garbage collected (server restart)
 
-### Support
+**"Not your turn":**
+- Wait for opponent to end their turn
+- Check currentPlayer in game state
 
-- GitHub Issues: Report bugs and feature requests
-- Aleph Discord: Community support for hosting questions
+**"Invalid token":**
+- Tokens are game-specific, get new ones for each game
+- Don't mix up player1Token/player2Token
+
+**Rate limiting:**
+- Default: 10 moves/min, 5 attacks/min
+- Add delays between actions if needed
+
+---
+
+## File Structure
+
+```
+warhammer-40k-arena/
+├── server/
+│   ├── server.js        # Express API server
+│   └── game-logic.js    # Game state & rules
+├── bot/
+│   ├── claude-bot.js    # Claude AI bot client
+│   └── package.json     # Bot dependencies
+├── Dockerfile           # Server container
+├── package.json         # Server dependencies
+├── index.html          # Web UI (optional)
+├── game.js             # Browser game logic
+├── battle.js           # Battle mechanics
+├── characters.js       # Unit definitions
+├── factions.js         # Faction data
+├── security.js         # Validation
+├── api.js              # Browser API layer
+└── styles.css          # UI styling
+```
 
 ---
 
 ## License
 
-MIT License - See LICENSE file for details.
+MIT License
 
-For the Emperor! (or your chosen faction)
+**For the Emperor!** (or your chosen faction)
