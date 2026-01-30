@@ -1,24 +1,33 @@
 // Warhammer 40K Battle Arena - Battle Management
+// Note: Uses GameConfig constants from game.js when available
 const Battle = {
+    // Get config value with fallback
+    getConfig(key, fallback) {
+        return typeof GameConfig !== 'undefined' && GameConfig[key] !== undefined
+            ? GameConfig[key]
+            : fallback;
+    },
+
     // Deploy units to starting positions
     deployUnits() {
         const players = Game.state.players;
+        const gridSize = this.getConfig('GRID_SIZE', 10);
 
-        // Player 1: Left side (cols 0-2)
+        // Player 1: Left side (col 0)
         players[1].units.forEach((unit, index) => {
             const row = 2 + (index % 6);
             const col = 0;
-            if (row < 10 && !Game.state.battlefield[row][col]) {
+            if (row < gridSize && !Game.state.battlefield[row][col]) {
                 Game.state.battlefield[row][col] = unit;
                 unit.position = { row, col };
             }
         });
 
-        // Player 2: Right side (cols 7-9)
+        // Player 2: Right side (last col)
         players[2].units.forEach((unit, index) => {
             const row = 2 + (index % 6);
-            const col = 9;
-            if (row < 10 && !Game.state.battlefield[row][col]) {
+            const col = gridSize - 1;
+            if (row < gridSize && !Game.state.battlefield[row][col]) {
                 Game.state.battlefield[row][col] = unit;
                 unit.position = { row, col };
             }
@@ -28,32 +37,61 @@ const Battle = {
         Game.log('Units deployed! The battle begins!', 'movement');
     },
 
-    // Calculate line of sight for shooting
+    // Calculate line of sight for shooting using Bresenham's line algorithm
     hasLineOfSight(attacker, target) {
         const { row: r1, col: c1 } = attacker.position;
         const { row: r2, col: c2 } = target.position;
 
-        // Simple check: no blocking terrain in direct line
-        const dr = Math.sign(r2 - r1);
-        const dc = Math.sign(c2 - c1);
+        // Use Bresenham's line algorithm for accurate line tracing
+        const cells = this.getLineCells(r1, c1, r2, c2);
 
-        let r = r1 + dr;
-        let c = c1 + dc;
-
-        while (r !== r2 || c !== c2) {
-            if (Game.isTerrain(r, c)) {
+        // Check all cells except start and end for terrain
+        for (let i = 1; i < cells.length - 1; i++) {
+            if (Game.isTerrain(cells[i].row, cells[i].col)) {
                 return false;
             }
-            if (r !== r2) r += dr;
-            if (c !== c2) c += dc;
         }
 
         return true;
     },
 
+    // Bresenham's line algorithm - returns all cells along a line
+    getLineCells(r1, c1, r2, c2) {
+        const cells = [];
+        const dr = Math.abs(r2 - r1);
+        const dc = Math.abs(c2 - c1);
+        const sr = r1 < r2 ? 1 : -1;
+        const sc = c1 < c2 ? 1 : -1;
+        let err = dr - dc;
+
+        let r = r1;
+        let c = c1;
+
+        while (true) {
+            cells.push({ row: r, col: c });
+
+            if (r === r2 && c === c2) break;
+
+            const e2 = 2 * err;
+            if (e2 > -dc) {
+                err -= dc;
+                r += sr;
+            }
+            if (e2 < dr) {
+                err += dr;
+                c += sc;
+            }
+        }
+
+        return cells;
+    },
+
     // Calculate cover bonus
     getCoverBonus(unit) {
+        if (!unit || !unit.position) return 0;
+
         const { row, col } = unit.position;
+        const gridSize = this.getConfig('GRID_SIZE', 10);
 
         // Check adjacent cells for terrain
         const adjacent = [
@@ -63,12 +101,12 @@ const Battle = {
 
         let inCover = false;
         adjacent.forEach(([r, c]) => {
-            if (r >= 0 && r < 10 && c >= 0 && c < 10 && Game.isTerrain(r, c)) {
+            if (r >= 0 && r < gridSize && c >= 0 && c < gridSize && Game.isTerrain(r, c)) {
                 inCover = true;
             }
         });
 
-        return inCover ? -1 : 0; // -1 AP = +1 to save
+        return inCover ? -1 : 0; // -1 to save target = easier to save
     },
 
     // Calculate distance between units
@@ -100,13 +138,16 @@ const Battle = {
 
     // Calculate objective control
     calculateObjectives() {
+        const gridSize = this.getConfig('GRID_SIZE', 10);
+        const vpUnit = this.getConfig('VP_UNIT_DESTROYED', 1);
+
         // Simplified: Control center of battlefield
-        const centerRow = 4;
-        const centerCol = 5;
+        const centerRow = Math.floor(gridSize / 2) - 1;
+        const centerCol = Math.floor(gridSize / 2);
         const centerUnit = Game.state.battlefield[centerRow][centerCol];
 
         if (centerUnit) {
-            Game.state.players[centerUnit.player].vp += 1;
+            Game.state.players[centerUnit.player].vp += vpUnit;
             Game.log(`${centerUnit.name} controls the objective!`, 'victory');
         }
     },
@@ -211,10 +252,12 @@ PLAYER 2 (${Factions[Game.state.players[2].faction].name}):
 
     // Serialize battlefield for API
     serializeBattlefield() {
+        const gridSize = this.getConfig('GRID_SIZE', 10);
         const grid = [];
-        for (let row = 0; row < 10; row++) {
+
+        for (let row = 0; row < gridSize; row++) {
             grid[row] = [];
-            for (let col = 0; col < 10; col++) {
+            for (let col = 0; col < gridSize; col++) {
                 const unit = Game.state.battlefield[row][col];
                 if (unit) {
                     grid[row][col] = {
@@ -222,7 +265,10 @@ PLAYER 2 (${Factions[Game.state.players[2].faction].name}):
                         player: unit.player,
                         type: unit.type,
                         wounds: unit.currentWounds,
-                        maxWounds: unit.wounds
+                        maxWounds: unit.wounds,
+                        position: unit.position,
+                        hasMoved: unit.hasMoved || false,
+                        hasAttacked: unit.hasAttacked || false
                     };
                 } else {
                     grid[row][col] = null;

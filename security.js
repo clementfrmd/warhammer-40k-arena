@@ -139,26 +139,54 @@ const Security = {
         };
     },
 
-    // Check line of sight
+    // Check line of sight - delegates to Battle's implementation for consistency
     hasLineOfSight(from, to, state) {
+        // Use Battle's Bresenham implementation if available, otherwise use local check
+        if (typeof Battle !== 'undefined' && Battle.hasLineOfSight) {
+            return Battle.hasLineOfSight(from, to);
+        }
+
+        // Fallback: check terrain along the line
         const { row: r1, col: c1 } = from.position;
         const { row: r2, col: c2 } = to.position;
 
-        const dr = Math.sign(r2 - r1);
-        const dc = Math.sign(c2 - c1);
-
-        let r = r1 + dr;
-        let c = c1 + dc;
-
-        while (r !== r2 || c !== c2) {
-            if (state.terrain.some(t => t.row === r && t.col === c)) {
+        const cells = this.getLineCells(r1, c1, r2, c2);
+        for (let i = 1; i < cells.length - 1; i++) {
+            const cell = cells[i];
+            if (state.terrain.some(t => t.row === cell.row && t.col === cell.col)) {
                 return false;
             }
-            if (r !== r2) r += dr;
-            if (c !== c2) c += dc;
         }
-
         return true;
+    },
+
+    // Bresenham's line algorithm - shared utility for line tracing
+    getLineCells(r1, c1, r2, c2) {
+        const cells = [];
+        const dr = Math.abs(r2 - r1);
+        const dc = Math.abs(c2 - c1);
+        const sr = r1 < r2 ? 1 : -1;
+        const sc = c1 < c2 ? 1 : -1;
+        let err = dr - dc;
+
+        let r = r1;
+        let c = c1;
+
+        while (true) {
+            cells.push({ row: r, col: c });
+            if (r === r2 && c === c2) break;
+
+            const e2 = 2 * err;
+            if (e2 > -dc) {
+                err -= dc;
+                r += sr;
+            }
+            if (e2 < dr) {
+                err += dr;
+                c += sc;
+            }
+        }
+        return cells;
     },
 
     // Validate turn timeout

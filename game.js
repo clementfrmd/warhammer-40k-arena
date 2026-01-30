@@ -1,11 +1,45 @@
 // Warhammer 40K Battle Arena - Core Game Logic
+
+// Game Configuration Constants
+const GameConfig = {
+    // Battlefield dimensions
+    GRID_SIZE: 10,
+
+    // Combat rules
+    HIT_THRESHOLD: 3,        // Roll this or higher to hit
+    WOUND_THRESHOLD: 4,      // Roll this or higher to wound
+    SAVE_THRESHOLD: 4,       // Roll this or higher to save
+    MIN_SAVE_THRESHOLD: 2,   // Minimum save value (with cover)
+
+    // Movement (in grid cells, unit.move / MOVE_SCALE = grid cells)
+    MOVE_SCALE: 2,           // 2" = 1 grid cell
+
+    // Attack ranges (in grid cells)
+    SHOOTING_RANGE: 6,
+    MELEE_RANGE: 2,
+
+    // Victory points
+    VP_UNIT_DESTROYED: 1,
+    VP_HQ_DESTROYED: 2,
+
+    // Game length
+    MAX_ROUNDS: 5,
+
+    // Turn timeout (5 minutes in ms)
+    TURN_TIMEOUT: 300000,
+
+    // Rate limits
+    MOVES_PER_MINUTE: 10,
+    ATTACKS_PER_MINUTE: 5
+};
+
 const Game = {
     state: {
         turn: 1,
         round: 1,
         phase: 'deployment', // deployment, movement, shooting, combat, morale
         currentPlayer: 1,
-        maxRounds: 5,
+        maxRounds: GameConfig.MAX_ROUNDS,
         players: {
             1: { faction: null, units: [], vp: 0 },
             2: { faction: null, units: [], vp: 0 }
@@ -24,15 +58,15 @@ const Game = {
         this.log("Welcome to the Warhammer 40K Battle Arena! ⚔️");
     },
 
-    // Setup 10x10 battlefield
+    // Setup battlefield grid
     setupBattlefield() {
         const grid = document.getElementById('battlefieldGrid');
         grid.innerHTML = '';
         this.state.battlefield = [];
 
-        for (let row = 0; row < 10; row++) {
+        for (let row = 0; row < GameConfig.GRID_SIZE; row++) {
             this.state.battlefield[row] = [];
-            for (let col = 0; col < 10; col++) {
+            for (let col = 0; col < GameConfig.GRID_SIZE; col++) {
                 const cell = document.createElement('div');
                 cell.className = 'cell';
                 cell.dataset.row = row;
@@ -52,7 +86,7 @@ const Game = {
 
     // Add terrain to battlefield
     addTerrain(row, col) {
-        const index = row * 10 + col;
+        const index = row * GameConfig.GRID_SIZE + col;
         const cell = document.querySelector(`.grid .cell:nth-child(${index + 1})`);
         if (cell) {
             cell.classList.add('terrain');
@@ -83,14 +117,30 @@ const Game = {
 
     // Select faction
     selectFaction(factionId, element) {
-        // Remove previous selection
-        document.querySelectorAll('.faction-option').forEach(el => el.classList.remove('selected'));
-        element.classList.add('selected');
-
+        // Check if Player 1 needs to select
         if (!this.state.players[1].faction) {
+            // Remove previous selection highlight
+            document.querySelectorAll('.faction-option').forEach(el => el.classList.remove('selected'));
+            element.classList.add('selected');
+
             this.state.players[1].faction = factionId;
             this.log(`Player 1 selects ${Factions[factionId].name}!`);
+
+            // Mark this faction as taken for visual feedback
+            element.classList.add('taken');
+            element.style.opacity = '0.5';
+
         } else if (!this.state.players[2].faction) {
+            // Prevent selecting the same faction as Player 1
+            if (factionId === this.state.players[1].faction) {
+                this.log(`${Factions[factionId].name} is already taken by Player 1!`);
+                return;
+            }
+
+            // Remove previous selection highlight (but keep Player 1's taken)
+            document.querySelectorAll('.faction-option:not(.taken)').forEach(el => el.classList.remove('selected'));
+            element.classList.add('selected');
+
             this.state.players[2].faction = factionId;
             this.log(`Player 2 selects ${Factions[factionId].name}!`);
         }
@@ -204,7 +254,7 @@ const Game = {
 
         if (this.state.selectedUnit && this.state.selectedUnit.position) {
             const { row, col } = this.state.selectedUnit.position;
-            const index = row * 10 + col;
+            const index = row * GameConfig.GRID_SIZE + col;
             const cell = document.querySelector(`.grid .cell:nth-child(${index + 1})`);
             if (cell) cell.classList.add('selected');
         }
@@ -229,11 +279,13 @@ const Game = {
 
         this.state.validMoves = [];
         const { row, col } = this.state.selectedUnit.position;
-        const moveRange = this.state.selectedUnit.move / 2; // Simplified: 2" = 1 grid cell
+        const moveRange = this.state.selectedUnit.move / GameConfig.MOVE_SCALE;
 
-        for (let r = Math.max(0, row - moveRange); r <= Math.min(9, row + moveRange); r++) {
-            for (let c = Math.max(0, col - moveRange); c <= Math.min(9, col + moveRange); c++) {
-                if (!this.state.battlefield[r][c] && !this.isTerrain(r, c)) {
+        for (let r = Math.max(0, row - Math.ceil(moveRange)); r <= Math.min(GameConfig.GRID_SIZE - 1, row + Math.ceil(moveRange)); r++) {
+            for (let c = Math.max(0, col - Math.ceil(moveRange)); c <= Math.min(GameConfig.GRID_SIZE - 1, col + Math.ceil(moveRange)); c++) {
+                // Use Euclidean distance for proper circular range
+                const distance = Math.sqrt(Math.pow(r - row, 2) + Math.pow(c - col, 2));
+                if (distance <= moveRange && !this.state.battlefield[r][c] && !this.isTerrain(r, c)) {
                     this.state.validMoves.push({ row: r, col: c });
                 }
             }
@@ -248,12 +300,14 @@ const Game = {
         if (!this.state.selectedUnit || !this.state.selectedUnit.position) return;
 
         const { row, col } = this.state.selectedUnit.position;
-        const range = this.state.phase === 'shooting' ? 6 : 2; // Simplified ranges
+        const range = this.state.phase === 'shooting' ? GameConfig.SHOOTING_RANGE : GameConfig.MELEE_RANGE;
 
-        for (let r = Math.max(0, row - range); r <= Math.min(9, row + range); r++) {
-            for (let c = Math.max(0, col - range); c <= Math.min(9, col + range); c++) {
+        for (let r = Math.max(0, row - range); r <= Math.min(GameConfig.GRID_SIZE - 1, row + range); r++) {
+            for (let c = Math.max(0, col - range); c <= Math.min(GameConfig.GRID_SIZE - 1, col + range); c++) {
+                // Use Euclidean distance for proper circular range
+                const distance = Math.sqrt(Math.pow(r - row, 2) + Math.pow(c - col, 2));
                 const target = this.state.battlefield[r][c];
-                if (target && target.player !== this.state.currentPlayer) {
+                if (distance <= range && target && target.player !== this.state.currentPlayer) {
                     this.state.validTargets.push({ row: r, col: c });
                 }
             }
@@ -280,7 +334,7 @@ const Game = {
     // Highlight valid moves
     highlightValidMoves() {
         this.state.validMoves.forEach(({ row, col }) => {
-            const index = row * 10 + col;
+            const index = row * GameConfig.GRID_SIZE + col;
             const cell = document.querySelector(`.grid .cell:nth-child(${index + 1})`);
             if (cell) cell.classList.add('valid-move');
         });
@@ -289,7 +343,7 @@ const Game = {
     // Highlight valid targets
     highlightValidTargets() {
         this.state.validTargets.forEach(({ row, col }) => {
-            const index = row * 10 + col;
+            const index = row * GameConfig.GRID_SIZE + col;
             const cell = document.querySelector(`.grid .cell:nth-child(${index + 1})`);
             if (cell) cell.classList.add('valid-target');
         });
@@ -298,12 +352,20 @@ const Game = {
     // Move unit
     moveUnit(row, col) {
         const unit = this.state.selectedUnit;
+
+        // Check if unit has already moved this turn
+        if (unit.hasMoved) {
+            this.log(`${unit.name} has already moved this turn!`, 'combat');
+            return;
+        }
+
         const { row: oldRow, col: oldCol } = unit.position;
 
         // Update battlefield
         this.state.battlefield[oldRow][oldCol] = null;
         this.state.battlefield[row][col] = unit;
         unit.position = { row, col };
+        unit.hasMoved = true;
 
         this.log(`${unit.name} moves!`, 'movement');
         this.deselectUnit();
@@ -348,26 +410,35 @@ const Game = {
 
         if (!attacker || !defender) return;
 
+        // Check if unit has already attacked this turn
+        if (attacker.hasAttacked) {
+            this.log(`${attacker.name} has already attacked this turn!`, 'combat');
+            return;
+        }
+
         // Roll to hit
         const hitRoll = this.rollDice();
-        const hitSuccess = hitRoll >= 3; // Simplified BS 4+
+        const hitSuccess = hitRoll >= GameConfig.HIT_THRESHOLD;
 
         if (hitSuccess) {
             // Roll to wound
             const woundRoll = this.rollDice();
-            const woundSuccess = woundRoll >= 4; // Simplified
+            const woundSuccess = woundRoll >= GameConfig.WOUND_THRESHOLD;
 
             if (woundSuccess) {
-                // Roll save
+                // Roll save - apply cover bonus if defender is in cover
+                const coverBonus = Battle.getCoverBonus(defender);
                 const saveRoll = this.rollDice();
-                const saveSuccess = saveRoll >= 4; // Simplified 4+ save
+                const saveTarget = Math.max(GameConfig.MIN_SAVE_THRESHOLD, GameConfig.SAVE_THRESHOLD + coverBonus);
+                const saveSuccess = saveRoll >= saveTarget;
 
                 if (!saveSuccess) {
                     // Deal damage
                     const damage = this.rollDice();
                     defender.currentWounds -= damage;
 
-                    this.log(`${attacker.name} hits ${defender.name} for ${damage} damage!`, 'combat');
+                    const coverText = coverBonus ? ' (in cover)' : '';
+                    this.log(`${attacker.name} hits ${defender.name} for ${damage} damage!${coverText}`, 'combat');
                     this.showDiceResults([hitRoll, woundRoll, saveRoll, damage]);
 
                     // Check if unit destroyed
@@ -375,7 +446,8 @@ const Game = {
                         this.destroyUnit(defender);
                     }
                 } else {
-                    this.log(`${defender.name} makes the save!`, 'combat');
+                    const coverText = coverBonus ? ' (cover helped!)' : '';
+                    this.log(`${defender.name} makes the save!${coverText}`, 'combat');
                     this.showDiceResults([hitRoll, woundRoll, saveRoll]);
                 }
             } else {
@@ -387,6 +459,10 @@ const Game = {
             this.showDiceResults([hitRoll]);
         }
 
+        // Mark attacker as having attacked this turn
+        attacker.hasAttacked = true;
+
+        this.deselectUnit();
         this.updateBattlefieldDisplay();
     },
 
@@ -396,9 +472,12 @@ const Game = {
         this.state.battlefield[row][col] = null;
 
         // Remove from player's units
-        const player = this.state.players[unit.player];
-        player.units = player.units.filter(u => u.id !== unit.id);
-        player.vp += unit.type === 'HQ' ? 2 : 1;
+        const owner = this.state.players[unit.player];
+        owner.units = owner.units.filter(u => u.id !== unit.id);
+
+        // Award VP to the OPPONENT (the one who destroyed the unit)
+        const opponent = this.state.players[unit.player === 1 ? 2 : 1];
+        opponent.vp += unit.type === 'HQ' ? GameConfig.VP_HQ_DESTROYED : GameConfig.VP_UNIT_DESTROYED;
 
         this.log(`${unit.name} has been destroyed!`, 'victory');
         this.checkVictoryCondition();
@@ -455,26 +534,46 @@ const Game = {
             this.advancePhase();
         }
 
+        // Reset unit action flags for the new player's turn
+        this.state.players[this.state.currentPlayer].units.forEach(unit => {
+            unit.hasAttacked = false;
+            unit.hasMoved = false;
+        });
+
         this.updateTurnIndicator();
         this.log(`Turn ${this.state.turn}: Player ${this.state.currentPlayer}'s turn`);
     },
 
     // Advance game phase
     advancePhase() {
-        const phases = ['movement', 'shooting', 'combat', 'morale'];
+        const phases = ['deployment', 'movement', 'shooting', 'combat', 'morale'];
         const currentIndex = phases.indexOf(this.state.phase);
-        const nextIndex = (currentIndex + 1) % phases.length;
 
-        if (nextIndex === 0) {
-            this.state.turn++;
+        // Handle deployment phase specially - it only happens once at start
+        if (this.state.phase === 'deployment') {
             this.state.phase = 'movement';
-        } else {
-            this.state.phase = phases[nextIndex];
+            return;
         }
 
-        // Advance round every 2 turns
-        if (this.state.turn % 2 === 1) {
-            this.state.round = Math.floor(this.state.turn / 2) + 1;
+        // Normal phase advancement (excluding deployment)
+        const gamePhases = ['movement', 'shooting', 'combat', 'morale'];
+        const gamePhaseIndex = gamePhases.indexOf(this.state.phase);
+        const nextIndex = (gamePhaseIndex + 1) % gamePhases.length;
+
+        if (nextIndex === 0) {
+            // New round starts
+            this.state.turn++;
+            this.state.phase = 'movement';
+
+            // Advance round counter (both players get a turn per round)
+            this.state.round = Math.floor((this.state.turn + 1) / 2);
+
+            // Check for game end at max rounds
+            if (this.state.round > this.state.maxRounds) {
+                this.checkVictoryCondition();
+            }
+        } else {
+            this.state.phase = gamePhases[nextIndex];
         }
     },
 
@@ -513,8 +612,8 @@ const Game = {
     // Update battlefield display
     updateBattlefieldDisplay() {
         document.querySelectorAll('.cell').forEach((cell, index) => {
-            const row = Math.floor(index / 10);
-            const col = index % 10;
+            const row = Math.floor(index / GameConfig.GRID_SIZE);
+            const col = index % GameConfig.GRID_SIZE;
             const unit = this.state.battlefield[row][col];
 
             cell.textContent = '';
