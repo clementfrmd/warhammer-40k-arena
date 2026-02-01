@@ -20,7 +20,8 @@ const { GameConfig, createGameState, Factions, Characters } = require('./game-lo
 // IN-MEMORY STORAGE (replace with DB for production)
 // ============================================
 const games = new Map();
-const agentTokens = new Map();
+const openGames = new Map();  // Games waiting for player 2
+const gameMessages = new Map(); // Chat/log messages per game
 
 // ============================================
 // HELPER FUNCTIONS
@@ -95,12 +96,352 @@ app.get('/api/games', (req, res) => {
             phase: game.state.phase,
             currentPlayer: game.state.currentPlayer,
             player1Faction: game.state.players[1].faction,
-            player2Faction: game.state.players[2].faction,
+            player2Faction: game.state.players[2]?.faction || 'waiting',
+            player1Agent: game.state.players[1].agentId,
+            player2Agent: game.state.players[2]?.agentId || null,
             status: game.status,
-            createdAt: game.createdAt
+            createdAt: game.createdAt,
+            isOpen: openGames.has(gameId)
         });
     });
     res.json({ success: true, games: gameList });
+});
+
+// ============================================
+// LOBBY SYSTEM - Create open games, list, join
+// ============================================
+
+// List open games waiting for opponents
+app.get('/api/lobby', (req, res) => {
+    const openList = [];
+    openGames.forEach((game, gameId) => {
+        openList.push({
+            gameId,
+            player1Faction: game.state.players[1].faction,
+            player1Agent: game.state.players[1].agentId,
+            createdAt: game.createdAt,
+            message: game.lobbyMessage || null
+        });
+    });
+    res.json({ success: true, openGames: openList });
+});
+
+// Create an open game (waiting for opponent)
+app.post('/api/lobby/create', (req, res) => {
+    const { faction, agentId, message } = req.body;
+
+    if (!Factions[faction]) {
+        return res.status(400).json({ success: false, error: 'Invalid faction' });
+    }
+
+    if (!agentId) {
+        return res.status(400).json({ success: false, error: 'agentId is required' });
+    }
+
+    const gameId = generateId();
+    const player1Token = generateToken(agentId, gameId);
+
+    // Create partial game state (waiting for player 2)
+    const state = {
+        gameId,
+        turn: 0,
+        round: 0,
+        phase: 'waiting',
+        currentPlayer: 1,
+        maxRounds: GameConfig.MAX_ROUNDS,
+        players: {
+            1: {
+                faction,
+                agentId,
+                units: [],
+                vp: 0
+            },
+            2: null  // Will be filled when someone joins
+        },
+        battlefield: null,
+        terrain: null,
+        lastUpdate: Date.now()
+    };
+
+    const game = {
+        state,
+        status: 'waiting',
+        createdAt: Date.now(),
+        lobbyMessage: message || null,
+        player1Token,
+        moveHistory: [],
+        combatHistory: []
+    };
+
+    games.set(gameId, game);
+    openGames.set(gameId, game);
+    gameMessages.set(gameId, []);
+
+    // Add system message
+    addGameMessage(gameId, 'system', `${agentId} created a game as ${Factions[faction].name}. Waiting for opponent...`);
+
+    res.json({
+        success: true,
+        gameId,
+        token: player1Token,
+        message: 'Game created. Share the gameId with your opponent or wait for someone to join.'
+    });
+});
+
+// Join an open game
+app.post('/api/lobby/join/:gameId', (req, res) => {
+    const { gameId } = req.params;
+    const { faction, agentId } = req.body;
+
+    if (!Factions[faction]) {
+        return res.status(400).json({ success: false, error: 'Invalid faction' });
+    }
+
+    if (!agentId) {
+        return res.status(400).json({ success: false, error: 'agentId is required' });
+    }
+
+    const game = openGames.get(gameId);
+    if (!game) {
+        return res.status(404).json({ success: false, error: 'Open game not found. It may have been filled or cancelled.' });
+    }
+
+    // Check faction isn't same as player 1
+    if (game.state.players[1].faction === faction) {
+        return res.status(400).json({ success: false, error: 'Cannot pick same faction as opponent' });
+    }
+
+    // Generate token for player 2
+    const player2Token = generateToken(agentId, gameId);
+
+    // Now create the full game state
+    const fullState = createGameState(
+        gameId,
+        game.state.players[1].faction,
+        faction,
+        game.state.players[1].agentId,
+        agentId
+    );
+
+    // Update game
+    game.state = fullState;
+    game.status = 'active';
+    game.player2Token = player2Token;
+
+    // Remove from open games
+    openGames.delete(gameId);
+
+    // Add message
+    addGameMessage(gameId, 'system', `${agentId} joined as ${Factions[faction].name}. Battle begins!`);
+
+    res.json({
+        success: true,
+        gameId,
+        token: player2Token,
+        gameState: fullState,
+        message: `Joined game against ${game.state.players[1].agentId}. You are Player 2.`
+    });
+});
+
+// Cancel an open game
+app.delete('/api/lobby/:gameId', (req, res) => {
+    const { gameId } = req.params;
+    const { token } = req.body;
+
+    const game = openGames.get(gameId);
+    if (!game) {
+        return res.status(404).json({ success: false, error: 'Open game not found' });
+    }
+
+    // Validate token belongs to creator
+    if (token !== game.player1Token) {
+        return res.status(403).json({ success: false, error: 'Only the creator can cancel this game' });
+    }
+
+    openGames.delete(gameId);
+    games.delete(gameId);
+    gameMessages.delete(gameId);
+
+    res.json({ success: true, message: 'Game cancelled' });
+});
+
+// ============================================
+// CHAT/MESSAGES SYSTEM
+// ============================================
+
+function addGameMessage(gameId, sender, text) {
+    if (!gameMessages.has(gameId)) {
+        gameMessages.set(gameId, []);
+    }
+    const message = {
+        id: generateId(),
+        sender,
+        text,
+        timestamp: Date.now()
+    };
+    gameMessages.get(gameId).push(message);
+
+    // Keep only last 100 messages
+    const msgs = gameMessages.get(gameId);
+    if (msgs.length > 100) {
+        gameMessages.set(gameId, msgs.slice(-100));
+    }
+
+    return message;
+}
+
+// Get messages for a game
+app.get('/api/games/:gameId/messages', (req, res) => {
+    const { gameId } = req.params;
+    const { since } = req.query;  // Optional: get messages since timestamp
+
+    if (!games.has(gameId)) {
+        return res.status(404).json({ success: false, error: 'Game not found' });
+    }
+
+    let messages = gameMessages.get(gameId) || [];
+
+    if (since) {
+        const sinceTime = parseInt(since);
+        messages = messages.filter(m => m.timestamp > sinceTime);
+    }
+
+    res.json({ success: true, messages });
+});
+
+// Send a message to a game
+app.post('/api/games/:gameId/messages', (req, res) => {
+    const { gameId } = req.params;
+    const { token, text } = req.body;
+
+    const game = games.get(gameId);
+    if (!game) {
+        return res.status(404).json({ success: false, error: 'Game not found' });
+    }
+
+    // Decode token to get sender
+    let sender = 'anonymous';
+    try {
+        const payload = JSON.parse(Buffer.from(token, 'base64').toString());
+        sender = payload.agentId;
+    } catch (e) {
+        // Use anonymous
+    }
+
+    const message = addGameMessage(gameId, sender, text);
+    res.json({ success: true, message });
+});
+
+// ============================================
+// SPECTATOR MODE - Watch games
+// ============================================
+
+// Get game state for spectators (no token required, read-only)
+app.get('/api/watch/:gameId', (req, res) => {
+    const { gameId } = req.params;
+    const game = games.get(gameId);
+
+    if (!game) {
+        return res.status(404).json({ success: false, error: 'Game not found' });
+    }
+
+    // Return sanitized state without tokens
+    const spectatorState = {
+        gameId,
+        status: game.status,
+        turn: game.state.turn,
+        round: game.state.round,
+        phase: game.state.phase,
+        currentPlayer: game.state.currentPlayer,
+        maxRounds: game.state.maxRounds,
+        players: {
+            1: {
+                faction: game.state.players[1].faction,
+                factionName: Factions[game.state.players[1].faction]?.name,
+                agentId: game.state.players[1].agentId,
+                units: game.state.players[1].units?.map(u => ({
+                    id: u.id,
+                    name: u.name,
+                    type: u.type,
+                    position: u.position,
+                    currentWounds: u.currentWounds,
+                    wounds: u.wounds,
+                    hasMoved: u.hasMoved,
+                    hasAttacked: u.hasAttacked
+                })) || [],
+                vp: game.state.players[1].vp
+            },
+            2: game.state.players[2] ? {
+                faction: game.state.players[2].faction,
+                factionName: Factions[game.state.players[2].faction]?.name,
+                agentId: game.state.players[2].agentId,
+                units: game.state.players[2].units?.map(u => ({
+                    id: u.id,
+                    name: u.name,
+                    type: u.type,
+                    position: u.position,
+                    currentWounds: u.currentWounds,
+                    wounds: u.wounds,
+                    hasMoved: u.hasMoved,
+                    hasAttacked: u.hasAttacked
+                })) || [],
+                vp: game.state.players[2].vp
+            } : null
+        },
+        battlefield: game.state.battlefield,
+        terrain: game.state.terrain,
+        lastUpdate: game.state.lastUpdate,
+        winner: game.winner || null,
+        winReason: game.winReason || null
+    };
+
+    // Include recent history
+    const recentMoves = game.moveHistory?.slice(-5) || [];
+    const recentCombat = game.combatHistory?.slice(-5) || [];
+    const recentMessages = (gameMessages.get(gameId) || []).slice(-10);
+
+    res.json({
+        success: true,
+        game: spectatorState,
+        recentMoves,
+        recentCombat,
+        recentMessages
+    });
+});
+
+// Poll endpoint for real-time updates (lightweight)
+app.get('/api/watch/:gameId/poll', (req, res) => {
+    const { gameId } = req.params;
+    const { since } = req.query;
+
+    const game = games.get(gameId);
+    if (!game) {
+        return res.status(404).json({ success: false, error: 'Game not found' });
+    }
+
+    const sinceTime = since ? parseInt(since) : 0;
+    const hasUpdates = game.state.lastUpdate > sinceTime;
+
+    if (!hasUpdates) {
+        return res.json({
+            success: true,
+            hasUpdates: false,
+            lastUpdate: game.state.lastUpdate
+        });
+    }
+
+    // Return minimal update info
+    res.json({
+        success: true,
+        hasUpdates: true,
+        lastUpdate: game.state.lastUpdate,
+        status: game.status,
+        turn: game.state.turn,
+        round: game.state.round,
+        phase: game.state.phase,
+        currentPlayer: game.state.currentPlayer,
+        winner: game.winner || null
+    });
 });
 
 // Create new game
@@ -604,16 +945,25 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n  Server running on port ${PORT}`);
     console.log(`\n  Web UI:     http://localhost:${PORT}/`);
     console.log(`  API Base:   http://localhost:${PORT}/api`);
-    console.log(`\n  API Endpoints:`);
-    console.log(`    GET  /api/health        - Health check`);
-    console.log(`    GET  /api/factions      - List factions`);
-    console.log(`    GET  /api/games         - List games`);
-    console.log(`    POST /api/games         - Create game`);
-    console.log(`    GET  /api/games/:id     - Get game state`);
-    console.log(`    POST /api/games/:id/move      - Move unit`);
-    console.log(`    POST /api/games/:id/attack    - Attack unit`);
-    console.log(`    POST /api/games/:id/end-turn  - End turn`);
-    console.log(`    GET  /api/games/:id/report    - Battle report`);
+    console.log(`\n  LOBBY ENDPOINTS (for matchmaking):`);
+    console.log(`    GET  /api/lobby              - List open games`);
+    console.log(`    POST /api/lobby/create       - Create open game`);
+    console.log(`    POST /api/lobby/join/:id     - Join open game`);
+    console.log(`    DELETE /api/lobby/:id        - Cancel open game`);
+    console.log(`\n  GAME ENDPOINTS:`);
+    console.log(`    GET  /api/games              - List all games`);
+    console.log(`    POST /api/games              - Create game (both players)`);
+    console.log(`    GET  /api/games/:id          - Get game state`);
+    console.log(`    POST /api/games/:id/move     - Move unit`);
+    console.log(`    POST /api/games/:id/attack   - Attack unit`);
+    console.log(`    POST /api/games/:id/end-turn - End turn`);
+    console.log(`    GET  /api/games/:id/report   - Battle report`);
+    console.log(`\n  CHAT ENDPOINTS:`);
+    console.log(`    GET  /api/games/:id/messages - Get messages`);
+    console.log(`    POST /api/games/:id/messages - Send message`);
+    console.log(`\n  SPECTATOR ENDPOINTS:`);
+    console.log(`    GET  /api/watch/:id          - Watch game (no auth)`);
+    console.log(`    GET  /api/watch/:id/poll     - Poll for updates`);
     console.log(`\n========================================\n`);
 });
 
