@@ -94,55 +94,19 @@ const Game = {
         }
     },
 
-    // Show faction selection modal
+    // Show faction selection modal - now handled by FactionSelect module
     showFactionSelection() {
         const modal = document.getElementById('setupModal');
-        const selection = document.getElementById('factionSelection');
-        selection.innerHTML = '';
-
-        const factions = getAllFactions();
-        factions.forEach(faction => {
-            const div = document.createElement('div');
-            div.className = 'faction-option';
-            div.onclick = () => this.selectFaction(faction.id, div);
-            div.innerHTML = `
-                <h4>${faction.icon} ${faction.name}</h4>
-                <p>${faction.bonus}</p>
-            `;
-            selection.appendChild(div);
-        });
-
+        if (typeof FactionSelect !== 'undefined') {
+            FactionSelect.init();
+        }
         modal.style.display = 'block';
     },
 
-    // Select faction
+    // Select faction - now delegated to FactionSelect module
     selectFaction(factionId, element) {
-        // Check if Player 1 needs to select
-        if (!this.state.players[1].faction) {
-            // Remove previous selection highlight
-            document.querySelectorAll('.faction-option').forEach(el => el.classList.remove('selected'));
-            element.classList.add('selected');
-
-            this.state.players[1].faction = factionId;
-            this.log(`Player 1 selects ${Factions[factionId].name}!`);
-
-            // Mark this faction as taken for visual feedback
-            element.classList.add('taken');
-            element.style.opacity = '0.5';
-
-        } else if (!this.state.players[2].faction) {
-            // Prevent selecting the same faction as Player 1
-            if (factionId === this.state.players[1].faction) {
-                this.log(`${Factions[factionId].name} is already taken by Player 1!`);
-                return;
-            }
-
-            // Remove previous selection highlight (but keep Player 1's taken)
-            document.querySelectorAll('.faction-option:not(.taken)').forEach(el => el.classList.remove('selected'));
-            element.classList.add('selected');
-
-            this.state.players[2].faction = factionId;
-            this.log(`Player 2 selects ${Factions[factionId].name}!`);
+        if (typeof FactionSelect !== 'undefined') {
+            FactionSelect.selectFaction(factionId, element);
         }
     },
 
@@ -595,7 +559,15 @@ const Game = {
         for (let i = 1; i <= 2; i++) {
             const player = this.state.players[i];
             const faction = Factions[player.faction];
-            document.getElementById(`player${i}Faction`).textContent = faction ? `${faction.icon} ${faction.name}` : 'Not Selected';
+            const factionEl = document.getElementById(`player${i}Faction`);
+
+            if (faction) {
+                factionEl.innerHTML = `<span style="color: ${faction.color}; font-weight: bold;">${faction.icon}</span> ${faction.name}`;
+                factionEl.style.borderLeftColor = faction.color;
+            } else {
+                factionEl.textContent = 'Awaiting Orders...';
+            }
+
             document.getElementById(`player${i}VP`).textContent = player.vp;
 
             const unitsList = document.getElementById(`player${i}Units`);
@@ -603,7 +575,13 @@ const Game = {
             player.units.forEach(unit => {
                 const div = document.createElement('div');
                 div.className = 'unit-item';
-                div.innerHTML = `<span>${unit.name}</span><span>${unit.currentWounds}/${unit.wounds} W</span>`;
+                if (unit.currentWounds <= 0) {
+                    div.classList.add('dead');
+                }
+                div.innerHTML = `
+                    <span>${unit.type === 'HQ' ? '★ ' : ''}${unit.name}</span>
+                    <span>${unit.currentWounds}/${unit.wounds} W</span>
+                `;
                 unitsList.appendChild(div);
             });
         }
