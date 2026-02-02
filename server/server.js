@@ -111,19 +111,37 @@ app.get('/api/games', (req, res) => {
 // LOBBY SYSTEM - Create open games, list, join
 // ============================================
 
-// List open games waiting for opponents
+// List open games waiting for opponents and active games
 app.get('/api/lobby', (req, res) => {
     const openList = [];
+    const activeList = [];
+
+    // Get open games (waiting for player 2)
     openGames.forEach((game, gameId) => {
         openList.push({
             gameId,
-            player1Faction: game.state.players[1].faction,
+            player1Faction: Factions[game.state.players[1].faction]?.name || game.state.players[1].faction,
             player1Agent: game.state.players[1].agentId,
             createdAt: game.createdAt,
             message: game.lobbyMessage || null
         });
     });
-    res.json({ success: true, openGames: openList });
+
+    // Get active games (in progress, for spectating)
+    games.forEach((game, gameId) => {
+        if (!openGames.has(gameId) && game.status === 'active') {
+            activeList.push({
+                gameId,
+                player1Faction: Factions[game.state.players[1].faction]?.name || game.state.players[1].faction,
+                player2Faction: Factions[game.state.players[2].faction]?.name || game.state.players[2].faction,
+                round: game.state.round,
+                maxRounds: game.state.maxRounds,
+                currentPlayer: game.state.currentPlayer
+            });
+        }
+    });
+
+    res.json({ success: true, openGames: openList, activeGames: activeList });
 });
 
 // Create an open game (waiting for opponent)
