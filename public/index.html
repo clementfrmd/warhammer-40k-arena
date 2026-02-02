@@ -223,7 +223,13 @@
         const Lobby = {
             agentId: null,
             currentGameId: null,
+            playerToken: null,
+            playerNumber: null,  // 1 or 2
             pollInterval: null,
+            isCreating: false,
+            isSpectating: false,
+            isRemoteGame: false,  // Track if this is a remote multiplayer game
+            joiningGameId: null,
 
             init() {
                 // Generate random agent ID if not set
@@ -298,7 +304,7 @@
                     });
                 } catch (error) {
                     container.innerHTML = `
-                        <div style="text-align: center; padding: 40px; color: var(--blood-red-light);">
+                        <div style="text-align: center; padding: 40px; color: var(--danger);">
                             <p>Failed to connect to battle servers</p>
                             <p style="font-size: 0.9em; color: var(--text-secondary);">${error.message}</p>
                         </div>
@@ -308,32 +314,133 @@
 
             async createGame() {
                 this.agentId = this.getAgentId();
-
-                // Show faction selection first
-                document.getElementById('lobbyScreen').style.display = 'none';
-                document.getElementById('gameScreen').style.display = 'block';
-                document.getElementById('selectingPlayer').textContent = 'SELECT YOUR FACTION';
-                FactionSelect.init();
-                document.getElementById('setupModal').style.display = 'block';
-
-                // Store that we're creating a game
                 this.isCreating = true;
-            },
-
-            async joinGame(gameId) {
-                this.agentId = this.getAgentId();
-                this.currentGameId = gameId;
+                this.isRemoteGame = true;
+                this.playerNumber = 1;
 
                 // Show faction selection
                 document.getElementById('lobbyScreen').style.display = 'none';
                 document.getElementById('gameScreen').style.display = 'block';
                 document.getElementById('selectingPlayer').textContent = 'SELECT YOUR FACTION';
-                FactionSelect.init();
+                FactionSelect.init(true);  // true = remote mode (single faction selection)
                 document.getElementById('setupModal').style.display = 'block';
+            },
 
-                // Store that we're joining
-                this.isCreating = false;
+            async joinGame(gameId) {
+                this.agentId = this.getAgentId();
+                this.currentGameId = gameId;
                 this.joiningGameId = gameId;
+                this.isCreating = false;
+                this.isRemoteGame = true;
+                this.playerNumber = 2;
+
+                // Show faction selection
+                document.getElementById('lobbyScreen').style.display = 'none';
+                document.getElementById('gameScreen').style.display = 'block';
+                document.getElementById('selectingPlayer').textContent = 'SELECT YOUR FACTION';
+                FactionSelect.init(true);  // true = remote mode
+                document.getElementById('setupModal').style.display = 'block';
+            },
+
+            // Called after faction selection to create the game via API
+            async confirmCreateGame(factionId) {
+                try {
+                    const response = await fetch('/api/lobby/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            faction: factionId,
+                            agentId: this.agentId
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (!data.success) {
+                        alert('Failed to create game: ' + data.error);
+                        return false;
+                    }
+
+                    this.currentGameId = data.gameId;
+                    this.playerToken = data.token;
+                    this.playerNumber = 1;
+
+                    Game.log(`Game created! Waiting for opponent...`);
+                    Chat.addSystemMessage('Game created. Waiting for an opponent to join...');
+
+                    // Close the modal and show waiting state
+                    document.getElementById('setupModal').style.display = 'none';
+                    this.showWaitingForOpponent();
+
+                    // Start polling for opponent
+                    this.startPolling();
+
+                    return true;
+                } catch (error) {
+                    alert('Error creating game: ' + error.message);
+                    return false;
+                }
+            },
+
+            // Called after faction selection to join the game via API
+            async confirmJoinGame(factionId) {
+                try {
+                    const response = await fetch(`/api/lobby/join/${this.joiningGameId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            faction: factionId,
+                            agentId: this.agentId
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (!data.success) {
+                        alert('Failed to join game: ' + data.error);
+                        return false;
+                    }
+
+                    this.currentGameId = this.joiningGameId;
+                    this.playerToken = data.token;
+                    this.playerNumber = 2;
+
+                    // Load the game state
+                    Game.loadRemoteState(data.gameState);
+                    Game.log(`Joined battle! You are Player 2.`);
+                    Chat.addSystemMessage('You joined the battle as Player 2!');
+
+                    // Close the modal
+                    document.getElementById('setupModal').style.display = 'none';
+
+                    // Start polling for updates
+                    this.startPolling();
+
+                    // Update turn controls
+                    this.updateTurnControls();
+
+                    return true;
+                } catch (error) {
+                    alert('Error joining game: ' + error.message);
+                    return false;
+                }
+            },
+
+            showWaitingForOpponent() {
+                // Show a waiting indicator on the battlefield
+                const grid = document.getElementById('battlefieldGrid');
+                grid.innerHTML = `
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 100px 20px; color: var(--cyan);">
+                        <h2>AWAITING CHALLENGER</h2>
+                        <p style="color: var(--text-secondary); margin-top: 20px;">
+                            Game ID: ${this.currentGameId.substring(0, 8)}
+                        </p>
+                        <p style="color: var(--text-secondary); margin-top: 10px;">
+                            Share this ID with your opponent or wait for someone to join from the lobby.
+                        </p>
+                        <div class="loading" style="margin-top: 30px;">Scanning for challengers...</div>
+                    </div>
+                `;
             },
 
             async spectateGame(gameId) {
@@ -349,6 +456,7 @@
 
                 this.currentGameId = gameId;
                 this.isSpectating = true;
+                this.isRemoteGame = true;
 
                 // Start polling for updates
                 this.startPolling();
@@ -360,14 +468,66 @@
                     const response = await fetch(`/api/watch/${this.currentGameId}`);
                     const data = await response.json();
 
-                    if (data.state) {
-                        Game.state = data.state;
-                        Game.updateBattlefieldDisplay();
-                        Game.updatePlayerPanels();
-                        Game.updateTurnIndicator();
+                    if (data.success && data.game) {
+                        // Check if game just became active (opponent joined)
+                        if (data.game.status === 'active' && this.playerNumber === 1 && !Game.state.players[2].faction) {
+                            // Game just started! Load the full state
+                            Game.loadRemoteState(data.game);
+                            Game.log(`Opponent joined! Battle begins!`);
+                            Chat.addSystemMessage('Opponent has joined. Battle begins!');
+                        } else if (data.game.status === 'active') {
+                            // Update game state
+                            Game.loadRemoteState(data.game);
+                        }
+
+                        // Check for game end
+                        if (data.game.status === 'finished') {
+                            Game.handleRemoteGameEnd(data.game);
+                        }
+
+                        // Update turn controls
+                        if (!this.isSpectating) {
+                            this.updateTurnControls();
+                        }
                     }
                 } catch (error) {
                     console.error('Failed to load game state:', error);
+                }
+            },
+
+            // Update controls based on whose turn it is
+            updateTurnControls() {
+                if (this.isSpectating) return;
+
+                const isMyTurn = Game.state.currentPlayer === this.playerNumber;
+                const buttons = document.querySelectorAll('.control-panel .panel-section:first-child button');
+
+                buttons.forEach(btn => {
+                    btn.disabled = !isMyTurn;
+                });
+
+                // Visual indicator for whose turn
+                const turnIndicator = document.querySelector('.turn-indicator');
+                if (turnIndicator) {
+                    if (isMyTurn) {
+                        turnIndicator.style.borderColor = 'var(--success)';
+                        turnIndicator.style.boxShadow = '0 0 20px rgba(0, 204, 136, 0.3)';
+                    } else {
+                        turnIndicator.style.borderColor = 'var(--danger)';
+                        turnIndicator.style.boxShadow = '0 0 20px rgba(255, 51, 102, 0.3)';
+                    }
+                }
+
+                // Update player text to show "YOUR TURN" or "OPPONENT'S TURN"
+                const playerText = document.getElementById('currentPlayer');
+                if (playerText) {
+                    if (isMyTurn) {
+                        playerText.textContent = 'YOUR TURN';
+                        playerText.style.color = 'var(--success)';
+                    } else {
+                        playerText.textContent = "OPPONENT'S TURN";
+                        playerText.style.color = 'var(--danger)';
+                    }
                 }
             },
 
@@ -375,7 +535,7 @@
                 if (this.pollInterval) clearInterval(this.pollInterval);
 
                 this.pollInterval = setInterval(async () => {
-                    if (this.isSpectating && this.currentGameId) {
+                    if (this.currentGameId) {
                         await this.loadGameState();
                         await Chat.loadMessages();
                     }
@@ -397,8 +557,22 @@
                     btn.disabled = false;
                 });
 
+                // Reset state
                 this.isSpectating = false;
+                this.isRemoteGame = false;
                 this.currentGameId = null;
+                this.playerToken = null;
+                this.playerNumber = null;
+                this.isCreating = false;
+                this.joiningGameId = null;
+
+                // Reset turn indicator styling
+                const turnIndicator = document.querySelector('.turn-indicator');
+                if (turnIndicator) {
+                    turnIndicator.style.borderColor = '';
+                    turnIndicator.style.boxShadow = '';
+                }
+
                 this.refreshGames();
             }
         };
@@ -410,11 +584,27 @@
             currentCategory: 'SPACE_MARINES',
             player1Faction: null,
             player2Faction: null,
+            remoteMode: false,  // true = single faction selection for remote play
+            selectedFaction: null,
 
-            init() {
+            init(remoteMode = false) {
                 this.player1Faction = null;
                 this.player2Faction = null;
+                this.selectedFaction = null;
+                this.remoteMode = remoteMode;
                 this.showCategory('SPACE_MARINES');
+
+                // Update button text based on mode
+                const startBtn = document.querySelector('#setupModal button[onclick="Game.startGame()"]');
+                if (startBtn) {
+                    if (remoteMode) {
+                        startBtn.textContent = Lobby.isCreating ? 'CREATE GAME' : 'JOIN BATTLE';
+                        startBtn.onclick = () => this.confirmSelection();
+                    } else {
+                        startBtn.textContent = 'COMMENCE BATTLE';
+                        startBtn.onclick = () => Game.startGame();
+                    }
+                }
             },
 
             showCategory(category) {
@@ -447,12 +637,19 @@
                     div.className = 'faction-option';
                     div.style.setProperty('--faction-color', faction.color);
 
-                    // Check if taken
-                    if (this.player1Faction === faction.id) {
-                        div.classList.add('taken');
-                    }
-                    if (this.player1Faction === faction.id || this.player2Faction === faction.id) {
-                        div.classList.add('selected');
+                    // Check if selected
+                    if (this.remoteMode) {
+                        if (this.selectedFaction === faction.id) {
+                            div.classList.add('selected');
+                        }
+                    } else {
+                        // Local play mode
+                        if (this.player1Faction === faction.id) {
+                            div.classList.add('taken');
+                        }
+                        if (this.player1Faction === faction.id || this.player2Faction === faction.id) {
+                            div.classList.add('selected');
+                        }
                     }
 
                     div.onclick = () => this.selectFaction(faction.id, div);
@@ -473,26 +670,48 @@
             selectFaction(factionId, element) {
                 const faction = Factions[factionId];
 
-                if (!this.player1Faction) {
-                    this.player1Faction = factionId;
-                    Game.state.players[1].faction = factionId;
+                if (this.remoteMode) {
+                    // Remote mode: single faction selection
+                    this.selectedFaction = factionId;
+                    Game.log(`You selected ${faction.name}!`);
+                    this.renderFactions(this.currentCategory);
+                } else {
+                    // Local play mode: two faction selections
+                    if (!this.player1Faction) {
+                        this.player1Faction = factionId;
+                        Game.state.players[1].faction = factionId;
 
-                    element.classList.add('selected', 'taken');
-                    Game.log(`Player 1 selects ${faction.name}!`);
+                        element.classList.add('selected', 'taken');
+                        Game.log(`Player 1 selects ${faction.name}!`);
 
-                    // For local play, prompt player 2
-                    document.getElementById('selectingPlayer').textContent = 'PLAYER 2';
+                        // For local play, prompt player 2
+                        document.getElementById('selectingPlayer').textContent = 'PLAYER 2';
 
-                } else if (!this.player2Faction && factionId !== this.player1Faction) {
-                    this.player2Faction = factionId;
-                    Game.state.players[2].faction = factionId;
+                    } else if (!this.player2Faction && factionId !== this.player1Faction) {
+                        this.player2Faction = factionId;
+                        Game.state.players[2].faction = factionId;
 
-                    element.classList.add('selected');
-                    Game.log(`Player 2 selects ${faction.name}!`);
+                        element.classList.add('selected');
+                        Game.log(`Player 2 selects ${faction.name}!`);
+                    }
+
+                    // Re-render to update taken states
+                    this.renderFactions(this.currentCategory);
+                }
+            },
+
+            // Called when user clicks the confirm button in remote mode
+            async confirmSelection() {
+                if (!this.selectedFaction) {
+                    alert('Please select a faction!');
+                    return;
                 }
 
-                // Re-render to update taken states
-                this.renderFactions(this.currentCategory);
+                if (Lobby.isCreating) {
+                    await Lobby.confirmCreateGame(this.selectedFaction);
+                } else {
+                    await Lobby.confirmJoinGame(this.selectedFaction);
+                }
             }
         };
 
@@ -501,26 +720,34 @@
         // ========================================
         const Chat = {
             messages: [],
+            lastMessageTimestamp: 0,
 
             async send() {
                 const input = document.getElementById('chatInput');
                 const message = input.value.trim();
 
-                if (!message || !Lobby.currentGameId) return;
+                if (!message) return;
 
-                try {
-                    await fetch(`/api/games/${Lobby.currentGameId}/messages`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            sender: Lobby.agentId || 'Anonymous',
-                            content: message
-                        })
-                    });
+                // For remote games, send via API
+                if (Lobby.isRemoteGame && Lobby.currentGameId) {
+                    try {
+                        await fetch(`/api/games/${Lobby.currentGameId}/messages`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                token: Lobby.playerToken || '',
+                                text: message
+                            })
+                        });
+                        input.value = '';
+                        await this.loadMessages();
+                    } catch (error) {
+                        console.error('Failed to send message:', error);
+                    }
+                } else {
+                    // Local play - just add to local messages
+                    this.addLocalMessage(Lobby.agentId || 'Player', message);
                     input.value = '';
-                    await this.loadMessages();
-                } catch (error) {
-                    console.error('Failed to send message:', error);
                 }
             },
 
@@ -528,10 +755,26 @@
                 if (!Lobby.currentGameId) return;
 
                 try {
-                    const response = await fetch(`/api/games/${Lobby.currentGameId}/messages`);
+                    const response = await fetch(`/api/games/${Lobby.currentGameId}/messages?since=${this.lastMessageTimestamp}`);
                     const data = await response.json();
-                    this.messages = data.messages || [];
-                    this.render();
+
+                    if (data.success && data.messages && data.messages.length > 0) {
+                        // Merge new messages
+                        data.messages.forEach(msg => {
+                            // Check if message already exists
+                            if (!this.messages.find(m => m.id === msg.id)) {
+                                this.messages.push({
+                                    id: msg.id,
+                                    sender: msg.sender,
+                                    content: msg.text,
+                                    type: msg.sender === 'system' ? 'system' : '',
+                                    timestamp: msg.timestamp
+                                });
+                                this.lastMessageTimestamp = Math.max(this.lastMessageTimestamp, msg.timestamp);
+                            }
+                        });
+                        this.render();
+                    }
                 } catch (error) {
                     console.error('Failed to load messages:', error);
                 }
@@ -540,9 +783,12 @@
             render() {
                 const container = document.getElementById('chatMessages');
 
-                container.innerHTML = this.messages.map(msg => `
+                // Sort messages by timestamp
+                const sorted = [...this.messages].sort((a, b) => a.timestamp - b.timestamp);
+
+                container.innerHTML = sorted.map(msg => `
                     <div class="chat-message ${msg.type || ''}">
-                        <div class="sender">${msg.sender}</div>
+                        <div class="sender">${this.escapeHtml(msg.sender)}</div>
                         <div class="content">${this.escapeHtml(msg.content)}</div>
                         <div class="timestamp">${new Date(msg.timestamp).toLocaleTimeString()}</div>
                     </div>
@@ -552,6 +798,7 @@
             },
 
             escapeHtml(text) {
+                if (!text) return '';
                 const div = document.createElement('div');
                 div.textContent = text;
                 return div.innerHTML;
@@ -559,11 +806,29 @@
 
             addSystemMessage(content) {
                 this.messages.push({
+                    id: 'local-' + Date.now(),
                     sender: 'SYSTEM',
                     content: content,
                     type: 'system',
                     timestamp: Date.now()
                 });
+                this.render();
+            },
+
+            addLocalMessage(sender, content) {
+                this.messages.push({
+                    id: 'local-' + Date.now(),
+                    sender: sender,
+                    content: content,
+                    type: '',
+                    timestamp: Date.now()
+                });
+                this.render();
+            },
+
+            clear() {
+                this.messages = [];
+                this.lastMessageTimestamp = 0;
                 this.render();
             }
         };

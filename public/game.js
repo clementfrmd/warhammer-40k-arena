@@ -41,8 +41,8 @@ const Game = {
         currentPlayer: 1,
         maxRounds: GameConfig.MAX_ROUNDS,
         players: {
-            1: { faction: null, units: [], vp: 0 },
-            2: { faction: null, units: [], vp: 0 }
+            1: { faction: null, units: [], vp: 0, agentId: null },
+            2: { faction: null, units: [], vp: 0, agentId: null }
         },
         selectedUnit: null,
         validMoves: [],
@@ -55,7 +55,151 @@ const Game = {
     init() {
         this.setupBattlefield();
         this.showFactionSelection();
-        this.log("Welcome to the Warhammer 40K Battle Arena! ⚔️");
+        this.log("Welcome to the Warhammer 40K Battle Arena!");
+    },
+
+    // Load game state from remote API response
+    loadRemoteState(remoteState) {
+        // Map remote state to local state format
+        this.state.turn = remoteState.turn || 1;
+        this.state.round = remoteState.round || 1;
+        this.state.phase = remoteState.phase || 'movement';
+        this.state.currentPlayer = remoteState.currentPlayer || 1;
+        this.state.maxRounds = remoteState.maxRounds || GameConfig.MAX_ROUNDS;
+
+        // Load players
+        if (remoteState.players) {
+            for (const playerId of [1, 2]) {
+                const remotePlayer = remoteState.players[playerId];
+                if (remotePlayer) {
+                    this.state.players[playerId] = {
+                        faction: remotePlayer.faction,
+                        agentId: remotePlayer.agentId,
+                        units: remotePlayer.units || [],
+                        vp: remotePlayer.vp || 0
+                    };
+                }
+            }
+        }
+
+        // Load battlefield
+        if (remoteState.battlefield) {
+            this.state.battlefield = remoteState.battlefield;
+        } else {
+            // Rebuild battlefield from units
+            this.rebuildBattlefield();
+        }
+
+        // Load terrain
+        if (remoteState.terrain) {
+            this.state.terrain = remoteState.terrain;
+        }
+
+        // Update display
+        this.setupBattlefieldGrid();
+        this.updateBattlefieldDisplay();
+        this.updatePlayerPanels();
+        this.updateTurnIndicator();
+    },
+
+    // Rebuild battlefield grid from unit positions
+    rebuildBattlefield() {
+        // Initialize empty battlefield
+        this.state.battlefield = [];
+        for (let row = 0; row < GameConfig.GRID_SIZE; row++) {
+            this.state.battlefield[row] = [];
+            for (let col = 0; col < GameConfig.GRID_SIZE; col++) {
+                this.state.battlefield[row][col] = null;
+            }
+        }
+
+        // Place units on battlefield
+        for (const playerId of [1, 2]) {
+            const units = this.state.players[playerId].units;
+            if (units) {
+                units.forEach(unit => {
+                    if (unit.position && unit.position.row !== undefined && unit.position.col !== undefined) {
+                        unit.player = playerId;
+                        this.state.battlefield[unit.position.row][unit.position.col] = unit;
+                    }
+                });
+            }
+        }
+    },
+
+    // Setup battlefield grid (just the DOM elements)
+    setupBattlefieldGrid() {
+        const grid = document.getElementById('battlefieldGrid');
+        grid.innerHTML = '';
+
+        for (let row = 0; row < GameConfig.GRID_SIZE; row++) {
+            for (let col = 0; col < GameConfig.GRID_SIZE; col++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.row = row;
+                cell.dataset.col = col;
+                cell.onclick = () => this.handleCellClick(row, col);
+                grid.appendChild(cell);
+            }
+        }
+    },
+
+    // Handle remote game end
+    handleRemoteGameEnd(gameState) {
+        const modal = document.getElementById('victoryModal');
+        const message = document.getElementById('victoryMessage');
+        const stats = document.getElementById('victoryStats');
+
+        if (gameState.winner === 0) {
+            message.textContent = "It's a draw!";
+        } else if (gameState.winner) {
+            const winner = gameState.players[gameState.winner];
+            const winnerFaction = Factions[winner.faction]?.name || winner.faction;
+            const isYou = typeof Lobby !== 'undefined' && Lobby.playerNumber === gameState.winner;
+
+            if (isYou) {
+                message.textContent = `VICTORY! You (${winnerFaction}) Won!`;
+                message.style.color = 'var(--success)';
+            } else {
+                message.textContent = `DEFEAT! ${winner.agentId} (${winnerFaction}) Won!`;
+                message.style.color = 'var(--danger)';
+            }
+        }
+
+        // Show stats
+        if (stats && gameState.players) {
+            const p1 = gameState.players[1];
+            const p2 = gameState.players[2];
+            stats.innerHTML = `
+                <div style="display: flex; justify-content: space-around; margin: 20px 0;">
+                    <div>
+                        <strong>${p1.agentId || 'Player 1'}</strong><br>
+                        VP: ${p1.vp || 0}<br>
+                        Units: ${p1.units?.length || 0}
+                    </div>
+                    <div>
+                        <strong>${p2?.agentId || 'Player 2'}</strong><br>
+                        VP: ${p2?.vp || 0}<br>
+                        Units: ${p2?.units?.length || 0}
+                    </div>
+                </div>
+                <p style="color: var(--text-secondary);">Reason: ${gameState.winReason || 'Game ended'}</p>
+            `;
+        }
+
+        modal.style.display = 'block';
+        this.log(`Game Over! ${message.textContent}`, 'victory');
+    },
+
+    // Check if this is a remote game
+    isRemoteGame() {
+        return typeof Lobby !== 'undefined' && Lobby.isRemoteGame;
+    },
+
+    // Check if it's the local player's turn
+    isMyTurn() {
+        if (!this.isRemoteGame()) return true;  // Local play - always your turn
+        return typeof Lobby !== 'undefined' && this.state.currentPlayer === Lobby.playerNumber;
     },
 
     // Setup battlefield grid
@@ -168,8 +312,22 @@ const Game = {
     handleCellClick(row, col) {
         const clickedCell = this.state.battlefield[row][col];
 
-        // If selecting a unit
-        if (clickedCell && clickedCell.player === this.state.currentPlayer) {
+        // In remote games, check if it's our turn
+        if (this.isRemoteGame() && !this.isMyTurn()) {
+            // Allow viewing unit info but not actions
+            if (clickedCell) {
+                this.showUnitInfo(clickedCell);
+            }
+            return;
+        }
+
+        // Determine which player's units we can control
+        const controllablePlayer = this.isRemoteGame()
+            ? (typeof Lobby !== 'undefined' ? Lobby.playerNumber : this.state.currentPlayer)
+            : this.state.currentPlayer;
+
+        // If selecting a unit (only our own units)
+        if (clickedCell && clickedCell.player === controllablePlayer) {
             this.selectUnit(clickedCell);
             return;
         }
@@ -314,7 +472,7 @@ const Game = {
     },
 
     // Move unit
-    moveUnit(row, col) {
+    async moveUnit(row, col) {
         const unit = this.state.selectedUnit;
 
         // Check if unit has already moved this turn
@@ -323,23 +481,66 @@ const Game = {
             return;
         }
 
-        const { row: oldRow, col: oldCol } = unit.position;
+        // Remote game - send move via API
+        if (this.isRemoteGame()) {
+            if (!this.isMyTurn()) {
+                this.log("It's not your turn!", 'combat');
+                return;
+            }
 
-        // Update battlefield
-        this.state.battlefield[oldRow][oldCol] = null;
-        this.state.battlefield[row][col] = unit;
-        unit.position = { row, col };
-        unit.hasMoved = true;
+            try {
+                const response = await fetch(`/api/games/${Lobby.currentGameId}/move`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: Lobby.playerToken,
+                        unitId: unit.id,
+                        to: { row, col }
+                    })
+                });
 
-        this.log(`${unit.name} moves!`, 'movement');
+                const data = await response.json();
+
+                if (!data.success) {
+                    this.log(`Move failed: ${data.error}`, 'combat');
+                    return;
+                }
+
+                // Update local state from server response
+                if (data.gameState) {
+                    this.loadRemoteState(data.gameState);
+                }
+
+                this.log(`${unit.name} moves!`, 'movement');
+            } catch (error) {
+                this.log(`Move error: ${error.message}`, 'combat');
+                return;
+            }
+        } else {
+            // Local game - update directly
+            const { row: oldRow, col: oldCol } = unit.position;
+
+            // Update battlefield
+            this.state.battlefield[oldRow][oldCol] = null;
+            this.state.battlefield[row][col] = unit;
+            unit.position = { row, col };
+            unit.hasMoved = true;
+
+            this.log(`${unit.name} moves!`, 'movement');
+            this.updateBattlefieldDisplay();
+        }
+
         this.deselectUnit();
-        this.updateBattlefieldDisplay();
     },
 
     // Action: Move
     actionMove() {
+        if (this.isRemoteGame() && !this.isMyTurn()) {
+            this.log("It's not your turn!", 'combat');
+            return;
+        }
         if (this.state.phase !== 'movement') {
-            alert('Not in movement phase!');
+            this.log('Not in movement phase!', 'combat');
             return;
         }
         this.calculateValidMoves();
@@ -348,8 +549,12 @@ const Game = {
 
     // Action: Shoot
     actionShoot() {
+        if (this.isRemoteGame() && !this.isMyTurn()) {
+            this.log("It's not your turn!", 'combat');
+            return;
+        }
         if (this.state.phase !== 'shooting') {
-            alert('Not in shooting phase!');
+            this.log('Not in shooting phase!', 'combat');
             return;
         }
         this.calculateValidTargets();
@@ -357,8 +562,12 @@ const Game = {
 
     // Action: Charge
     actionCharge() {
+        if (this.isRemoteGame() && !this.isMyTurn()) {
+            this.log("It's not your turn!", 'combat');
+            return;
+        }
         if (this.state.phase !== 'movement') {
-            alert('Charge only in movement phase!');
+            this.log('Charge only in movement phase!', 'combat');
             return;
         }
         // Simplified: Charge is like move but to enemy
@@ -368,7 +577,7 @@ const Game = {
     },
 
     // Attack unit
-    attackUnit(row, col) {
+    async attackUnit(row, col) {
         const attacker = this.state.selectedUnit;
         const defender = this.state.battlefield[row][col];
 
@@ -380,54 +589,121 @@ const Game = {
             return;
         }
 
-        // Roll to hit
-        const hitRoll = this.rollDice();
-        const hitSuccess = hitRoll >= GameConfig.HIT_THRESHOLD;
+        // Remote game - send attack via API
+        if (this.isRemoteGame()) {
+            if (!this.isMyTurn()) {
+                this.log("It's not your turn!", 'combat');
+                return;
+            }
 
-        if (hitSuccess) {
-            // Roll to wound
-            const woundRoll = this.rollDice();
-            const woundSuccess = woundRoll >= GameConfig.WOUND_THRESHOLD;
+            const attackType = this.state.phase === 'shooting' ? 'shooting' : 'melee';
 
-            if (woundSuccess) {
-                // Roll save - apply cover bonus if defender is in cover
-                const coverBonus = Battle.getCoverBonus(defender);
-                const saveRoll = this.rollDice();
-                const saveTarget = Math.max(GameConfig.MIN_SAVE_THRESHOLD, GameConfig.SAVE_THRESHOLD + coverBonus);
-                const saveSuccess = saveRoll >= saveTarget;
+            try {
+                const response = await fetch(`/api/games/${Lobby.currentGameId}/attack`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: Lobby.playerToken,
+                        attackerId: attacker.id,
+                        targetId: defender.id,
+                        type: attackType
+                    })
+                });
 
-                if (!saveSuccess) {
-                    // Deal damage
-                    const damage = this.rollDice();
-                    defender.currentWounds -= damage;
+                const data = await response.json();
 
-                    const coverText = coverBonus ? ' (in cover)' : '';
-                    this.log(`${attacker.name} hits ${defender.name} for ${damage} damage!${coverText}`, 'combat');
-                    this.showDiceResults([hitRoll, woundRoll, saveRoll, damage]);
-
-                    // Check if unit destroyed
-                    if (defender.currentWounds <= 0) {
-                        this.destroyUnit(defender);
-                    }
-                } else {
-                    const coverText = coverBonus ? ' (cover helped!)' : '';
-                    this.log(`${defender.name} makes the save!${coverText}`, 'combat');
-                    this.showDiceResults([hitRoll, woundRoll, saveRoll]);
+                if (!data.success) {
+                    this.log(`Attack failed: ${data.error}`, 'combat');
+                    return;
                 }
-            } else {
-                this.log(`${attacker.name} fails to wound!`, 'combat');
-                this.showDiceResults([hitRoll, woundRoll]);
+
+                // Show combat results
+                const combat = data.combat;
+                if (combat) {
+                    const rolls = [combat.hitRoll];
+                    if (combat.woundRoll) rolls.push(combat.woundRoll);
+                    if (combat.saveRoll) rolls.push(combat.saveRoll);
+                    if (combat.damage) rolls.push(combat.damage);
+                    this.showDiceResults(rolls);
+
+                    if (!combat.hitSuccess) {
+                        this.log(`${attacker.name} misses!`, 'combat');
+                    } else if (!combat.woundSuccess) {
+                        this.log(`${attacker.name} fails to wound!`, 'combat');
+                    } else if (combat.saveSuccess) {
+                        this.log(`${defender.name} makes the save!`, 'combat');
+                    } else {
+                        this.log(`${attacker.name} hits ${defender.name} for ${combat.damage} damage!`, 'combat');
+                        if (combat.unitDestroyed) {
+                            this.log(`${defender.name} has been destroyed!`, 'victory');
+                        }
+                    }
+                }
+
+                // Update local state from server response
+                if (data.gameState) {
+                    this.loadRemoteState(data.gameState);
+                }
+
+                // Check for game end
+                if (data.gameStatus === 'finished') {
+                    await Lobby.loadGameState();
+                }
+            } catch (error) {
+                this.log(`Attack error: ${error.message}`, 'combat');
+                return;
             }
         } else {
-            this.log(`${attacker.name} misses!`, 'combat');
-            this.showDiceResults([hitRoll]);
+            // Local game - execute combat locally
+            // Roll to hit
+            const hitRoll = this.rollDice();
+            const hitSuccess = hitRoll >= GameConfig.HIT_THRESHOLD;
+
+            if (hitSuccess) {
+                // Roll to wound
+                const woundRoll = this.rollDice();
+                const woundSuccess = woundRoll >= GameConfig.WOUND_THRESHOLD;
+
+                if (woundSuccess) {
+                    // Roll save - apply cover bonus if defender is in cover
+                    const coverBonus = typeof Battle !== 'undefined' ? Battle.getCoverBonus(defender) : 0;
+                    const saveRoll = this.rollDice();
+                    const saveTarget = Math.max(GameConfig.MIN_SAVE_THRESHOLD, GameConfig.SAVE_THRESHOLD + coverBonus);
+                    const saveSuccess = saveRoll >= saveTarget;
+
+                    if (!saveSuccess) {
+                        // Deal damage
+                        const damage = this.rollDice();
+                        defender.currentWounds -= damage;
+
+                        const coverText = coverBonus ? ' (in cover)' : '';
+                        this.log(`${attacker.name} hits ${defender.name} for ${damage} damage!${coverText}`, 'combat');
+                        this.showDiceResults([hitRoll, woundRoll, saveRoll, damage]);
+
+                        // Check if unit destroyed
+                        if (defender.currentWounds <= 0) {
+                            this.destroyUnit(defender);
+                        }
+                    } else {
+                        const coverText = coverBonus ? ' (cover helped!)' : '';
+                        this.log(`${defender.name} makes the save!${coverText}`, 'combat');
+                        this.showDiceResults([hitRoll, woundRoll, saveRoll]);
+                    }
+                } else {
+                    this.log(`${attacker.name} fails to wound!`, 'combat');
+                    this.showDiceResults([hitRoll, woundRoll]);
+                }
+            } else {
+                this.log(`${attacker.name} misses!`, 'combat');
+                this.showDiceResults([hitRoll]);
+            }
+
+            // Mark attacker as having attacked this turn
+            attacker.hasAttacked = true;
+            this.updateBattlefieldDisplay();
         }
 
-        // Mark attacker as having attacked this turn
-        attacker.hasAttacked = true;
-
         this.deselectUnit();
-        this.updateBattlefieldDisplay();
     },
 
     // Destroy unit
@@ -487,25 +763,69 @@ const Game = {
     },
 
     // End turn
-    endTurn() {
+    async endTurn() {
         this.deselectUnit();
 
-        // Switch player
-        this.state.currentPlayer = this.state.currentPlayer === 1 ? 2 : 1;
+        // Remote game - send end turn via API
+        if (this.isRemoteGame()) {
+            if (!this.isMyTurn()) {
+                this.log("It's not your turn!", 'combat');
+                return;
+            }
 
-        // Advance phase
-        if (this.state.currentPlayer === 1) {
-            this.advancePhase();
+            try {
+                const response = await fetch(`/api/games/${Lobby.currentGameId}/end-turn`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: Lobby.playerToken
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    this.log(`End turn failed: ${data.error}`, 'combat');
+                    return;
+                }
+
+                // Update local state from server response
+                if (data.gameState) {
+                    this.loadRemoteState(data.gameState);
+                }
+
+                this.log(`Turn ${data.turn}: ${data.currentPlayer === Lobby.playerNumber ? 'Your' : "Opponent's"} turn`);
+
+                // Update turn controls
+                Lobby.updateTurnControls();
+
+                // Check for game end
+                if (data.gameStatus === 'finished') {
+                    await Lobby.loadGameState();
+                }
+            } catch (error) {
+                this.log(`End turn error: ${error.message}`, 'combat');
+                return;
+            }
+        } else {
+            // Local game - handle turn change locally
+            // Switch player
+            this.state.currentPlayer = this.state.currentPlayer === 1 ? 2 : 1;
+
+            // Advance phase
+            if (this.state.currentPlayer === 1) {
+                this.advancePhase();
+            }
+
+            // Reset unit action flags for the new player's turn
+            this.state.players[this.state.currentPlayer].units.forEach(unit => {
+                unit.hasAttacked = false;
+                unit.hasMoved = false;
+            });
+
+            this.updateTurnIndicator();
+            this.log(`Turn ${this.state.turn}: Player ${this.state.currentPlayer}'s turn`);
         }
-
-        // Reset unit action flags for the new player's turn
-        this.state.players[this.state.currentPlayer].units.forEach(unit => {
-            unit.hasAttacked = false;
-            unit.hasMoved = false;
-        });
-
-        this.updateTurnIndicator();
-        this.log(`Turn ${this.state.turn}: Player ${this.state.currentPlayer}'s turn`);
     },
 
     // Advance game phase
@@ -550,16 +870,46 @@ const Game = {
     updateTurnIndicator() {
         document.getElementById('currentTurn').textContent = this.state.turn;
         document.getElementById('currentPhase').textContent = this.state.phase.charAt(0).toUpperCase() + this.state.phase.slice(1);
-        document.getElementById('currentPlayer').textContent = `Player ${this.state.currentPlayer}`;
         document.getElementById('roundNumber').textContent = this.state.round;
+
+        const playerText = document.getElementById('currentPlayer');
+        if (this.isRemoteGame() && typeof Lobby !== 'undefined') {
+            const isMyTurn = this.state.currentPlayer === Lobby.playerNumber;
+            if (Lobby.isSpectating) {
+                playerText.textContent = `Player ${this.state.currentPlayer}`;
+                playerText.style.color = '';
+            } else if (isMyTurn) {
+                playerText.textContent = 'YOUR TURN';
+                playerText.style.color = 'var(--success)';
+            } else {
+                playerText.textContent = "OPPONENT'S TURN";
+                playerText.style.color = 'var(--danger)';
+            }
+        } else {
+            playerText.textContent = `Player ${this.state.currentPlayer}`;
+            playerText.style.color = '';
+        }
     },
 
     // Update player panels
     updatePlayerPanels() {
         for (let i = 1; i <= 2; i++) {
             const player = this.state.players[i];
+            if (!player) continue;
+
             const faction = Factions[player.faction];
             const factionEl = document.getElementById(`player${i}Faction`);
+            const panelHeader = document.querySelector(`#player${i}Panel h3`);
+
+            // Update header with agent name in remote games
+            if (panelHeader) {
+                if (this.isRemoteGame() && player.agentId) {
+                    const isYou = typeof Lobby !== 'undefined' && Lobby.playerNumber === i;
+                    panelHeader.textContent = isYou ? `YOU (${player.agentId})` : player.agentId;
+                } else {
+                    panelHeader.textContent = `PLAYER ${i}`;
+                }
+            }
 
             if (faction) {
                 factionEl.innerHTML = `<span style="color: ${faction.color}; font-weight: bold;">${faction.icon}</span> ${faction.name}`;
@@ -568,22 +918,25 @@ const Game = {
                 factionEl.textContent = 'Awaiting Orders...';
             }
 
-            document.getElementById(`player${i}VP`).textContent = player.vp;
+            document.getElementById(`player${i}VP`).textContent = player.vp || 0;
 
             const unitsList = document.getElementById(`player${i}Units`);
             unitsList.innerHTML = '';
-            player.units.forEach(unit => {
-                const div = document.createElement('div');
-                div.className = 'unit-item';
-                if (unit.currentWounds <= 0) {
-                    div.classList.add('dead');
-                }
-                div.innerHTML = `
-                    <span>${unit.type === 'HQ' ? '★ ' : ''}${unit.name}</span>
-                    <span>${unit.currentWounds}/${unit.wounds} W</span>
-                `;
-                unitsList.appendChild(div);
-            });
+
+            if (player.units) {
+                player.units.forEach(unit => {
+                    const div = document.createElement('div');
+                    div.className = 'unit-item';
+                    if (unit.currentWounds <= 0) {
+                        div.classList.add('dead');
+                    }
+                    div.innerHTML = `
+                        <span>${unit.type === 'HQ' ? '★ ' : ''}${unit.name}</span>
+                        <span>${unit.currentWounds}/${unit.wounds} W</span>
+                    `;
+                    unitsList.appendChild(div);
+                });
+            }
         }
     },
 
