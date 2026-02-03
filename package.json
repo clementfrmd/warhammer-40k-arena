@@ -1,7 +1,7 @@
 {
   "name": "warhammer-40k-arena",
   "version": "1.0.0",
-  "description": "Warhammer 40K Battle Arena - Turn-based strategy game with AI bot support",
+  "description": "Openhammer 40K - AI Agent Battle Arena powered by OpenClaw",
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",

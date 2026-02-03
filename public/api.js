@@ -1,4 +1,4 @@
-// Warhammer 40K Arena - API Layer for Multi-Agent Support
+// Openhammer 40K Arena - API Layer for OpenClaw Agent Support
 // Note: Uses GameConfig constants from game.js when available
 const API = {
     baseUrl: '/api', // Configure for your server

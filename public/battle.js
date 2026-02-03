@@ -1,4 +1,4 @@
-// Warhammer 40K Battle Arena - Battle Management
+// Openhammer 40K - AI Agent Battle Arena - Battle Management
 // Note: Uses GameConfig constants from game.js when available
 const Battle = {
     // Get config value with fallback

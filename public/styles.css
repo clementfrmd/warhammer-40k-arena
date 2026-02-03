@@ -1,7 +1,7 @@
 /* ========================================
-   WARHAMMER 40K BATTLE ARENA
+   OPENHAMMER 40K - AI AGENT BATTLE ARENA
    Dark Military Sci-Fi Theme
-   Inspired by Total War / Grimdark Aesthetic
+   Powered by OpenClaw (openclaw.ai)
    ======================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@400;500;600;700&family=Teko:wght@400;500;600;700&display=swap');
@@ -208,6 +208,97 @@ body::after {
     text-shadow: 0 0 15px var(--cyan-glow);
     letter-spacing: 15px;
     margin-bottom: 10px;
+}
+
+/* OpenClaw Badge */
+.openclaw-badge {
+    margin-top: 12px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.7em;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+}
+
+.openclaw-badge a {
+    color: var(--cyan);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.3);
+    transition: all 0.2s;
+}
+
+.openclaw-badge a:hover {
+    color: #fff;
+    border-bottom-color: #fff;
+    text-shadow: 0 0 10px var(--cyan-glow);
+}
+
+/* How It Works Banner */
+.how-it-works {
+    max-width: 900px;
+    margin: 0 auto 30px;
+    padding: 20px 25px;
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.04) 0%, rgba(0, 100, 150, 0.04) 100%);
+    border: 1px solid var(--border-dark);
+    border-top: 2px solid rgba(0, 212, 255, 0.3);
+    position: relative;
+}
+
+.how-it-works::before {
+    content: 'HOW OPENHAMMER WORKS';
+    position: absolute;
+    top: -10px;
+    left: 20px;
+    background: var(--bg-dark);
+    padding: 0 10px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65em;
+    color: var(--cyan);
+    letter-spacing: 2px;
+}
+
+.how-it-works-inner {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 25px;
+}
+
+.how-step {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+}
+
+.step-icon {
+    font-size: 1.8em;
+    min-width: 40px;
+    text-align: center;
+    line-height: 1;
+}
+
+.how-step strong {
+    font-family: 'Teko', sans-serif;
+    font-size: 1.2em;
+    letter-spacing: 1px;
+    color: var(--text-primary);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.how-step p {
+    font-size: 0.85em;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.how-step p a {
+    color: var(--cyan);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--cyan-dark);
+}
+
+.how-step p a:hover {
+    color: #fff;
 }
 
 /* ========================================
@@ -950,10 +1041,44 @@ button:disabled::before {
 .agent-login h3 {
     font-family: 'Orbitron', sans-serif;
     color: var(--steel-light);
-    margin-bottom: 18px;
+    margin-bottom: 8px;
     text-align: center;
     font-size: 0.85em;
     letter-spacing: 2px;
+}
+
+.agent-login-desc {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 18px;
+}
+
+.api-hint {
+    margin-top: 14px;
+    padding: 10px 14px;
+    background: rgba(0, 212, 255, 0.03);
+    border: 1px solid var(--border-dark);
+    font-size: 0.78em;
+    color: var(--text-dim);
+    text-align: center;
+    line-height: 1.5;
+}
+
+.api-hint span {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--cyan);
+    font-size: 0.9em;
+    letter-spacing: 1px;
+}
+
+.api-hint code {
+    font-family: 'Courier New', monospace;
+    background: rgba(0, 212, 255, 0.08);
+    padding: 2px 6px;
+    border-radius: 2px;
+    color: var(--steel-light);
+    font-size: 0.95em;
 }
 
 .form-group {
@@ -1188,6 +1313,11 @@ button:disabled::before {
     .header h1 {
         font-size: 2em;
         letter-spacing: 4px;
+    }
+
+    .how-it-works-inner {
+        grid-template-columns: 1fr;
+        gap: 15px;
     }
 
     .control-panel {

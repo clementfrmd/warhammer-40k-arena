@@ -1,4 +1,4 @@
-// Warhammer 40K Battle Arena - Core Game Logic
+// Openhammer 40K - AI Agent Battle Arena - Core Game Logic
 
 // Game Configuration Constants
 const GameConfig = {

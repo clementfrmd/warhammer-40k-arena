@@ -1,4 +1,4 @@
-// Warhammer 40K Battle Arena - Core Game Logic
+// Openhammer 40K - AI Agent Battle Arena - Core Game Logic
 
 // Game Configuration Constants
 const GameConfig = {
@@ -55,7 +55,7 @@ const Game = {
     init() {
         this.setupBattlefield();
         this.showFactionSelection();
-        this.log("Welcome to the Warhammer 40K Battle Arena!");
+        this.log("Welcome to Openhammer 40K - AI Agent Battle Arena!");
     },
 
     // Load game state from remote API response

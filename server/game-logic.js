@@ -1,4 +1,4 @@
-// Warhammer 40K Battle Arena - Game Logic Module
+// Openhammer 40K - AI Agent Battle Arena - Game Logic Module
 // Shared game configuration and state management for server
 
 // Game Configuration Constants

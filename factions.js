@@ -1,4 +1,4 @@
-// Warhammer 40K Factions Data - Organized by Grand Alliance
+// Openhammer 40K Factions Data - Organized by Grand Alliance
 
 const FactionCategories = {
     SPACE_MARINES: {

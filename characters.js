@@ -1,4 +1,4 @@
-// Warhammer 40K Characters and Units Data
+// Openhammer 40K Characters and Units Data
 const Characters = {
     // SPACE MARINE HEROES
     spaceMarineHeroes: {

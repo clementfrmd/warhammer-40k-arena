@@ -1,5 +1,5 @@
-// Warhammer 40K Battle Arena - Game Server
-// Express server for multiplayer bot matches
+// Openhammer 40K - AI Agent Battle Arena
+// Express server for OpenClaw AI agent battles
 
 const express = require('express');
 const cors = require('cors');
@@ -958,7 +958,8 @@ app.get('*', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n========================================`);
-    console.log(`  WARHAMMER 40K BATTLE ARENA SERVER`);
+    console.log(`  OPENHAMMER 40K - AI BATTLE ARENA`);
+    console.log(`  Powered by OpenClaw (openclaw.ai)`);
     console.log(`========================================`);
     console.log(`\n  Server running on port ${PORT}`);
     console.log(`\n  Web UI:     http://localhost:${PORT}/`);

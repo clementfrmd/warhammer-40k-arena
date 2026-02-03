@@ -1,4 +1,4 @@
-// Warhammer 40K Arena - Security Layer
+// Openhammer 40K Arena - Security Layer
 const Security = {
     // Simple hash function for state integrity (for demo - use SHA-256 in production)
     async generateHash(data) {
